@@ -1,0 +1,25 @@
+# Go build artifacts
+*.test
+*.out
+*.exe
+
+# Benchmark output
+bench*.txt
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Coverage
+coverage.out
+coverage.html
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
