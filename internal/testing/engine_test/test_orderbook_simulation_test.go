@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"TradeIT/engine"
 	"TradeIT/internal/models"
+	"TradeIT/services/engine-service/engine"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -71,7 +71,7 @@ func TestCancelAfterPartial(t *testing.T) {
 	ob.Matcher(models.Order{MetaOrder: models.MetaOrder{Id: 7, Order_Type: "limit", Side: "buy", Price: 250, Quantity: 10, Status: "pending"}, Remq: 10})
 	// Now cancel remaining sell order
 	err := ob.CancelOrder(6)
-	assert.EqualError(t, err, "order was partially filled,rest of order has been cancelled")
+	assert.EqualError(t, err, "ORDER_PARTIAL_CANCELLED")
 	_, exists := ob.GetOrderTable()[6]
 	assert.False(t, exists, "partially filled order should be removed on cancel")
 }
@@ -105,7 +105,7 @@ func TestConcurrentCancellations(t *testing.T) {
 func TestCancelNonExistent(t *testing.T) {
 	ob := setupOrderbook()
 	err := ob.CancelOrder(9999)
-	assert.EqualError(t, err, "order has been proceessed or does not exist", "should return specific error for invalid ID")
+	assert.EqualError(t, err, "ORDER_NOT_IN_MATCHER", "should return specific error for invalid ID")
 }
 
 // TestInvalidOrderType tests unsupported order type handling.
@@ -116,7 +116,7 @@ func TestInvalidOrderType(t *testing.T) {
 	ob.GetOrderTable()[10] = node
 
 	err := ob.CancelOrder(10)
-	assert.EqualError(t, err, "unsupported order type", "should error on invalid order side")
+	assert.EqualError(t, err, "ORDER_UNSUPPORTED_TYPE", "should error on invalid order side")
 }
 
 // TestStressScenario simulates rapid inserts, matches, and cancels under load.

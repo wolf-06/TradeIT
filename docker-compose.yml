@@ -1,10 +1,15 @@
-version: '3.8'
-
+# `version:` is obsolete in Compose v2+ (it is ignored and only emits a warning), so it is omitted.
 services:
   db:
     container_name: tradeit_db
-    image: postgres
-    user: 1000:1000
+    # Pinned: "postgres" (latest) now resolves to 18.x, which changed the data
+    # directory layout (PGDATA=/var/lib/postgresql/18/docker). Never use a floating
+    # tag for a database image, or a fresh image pull can break an existing volume.
+    image: postgres:18-alpine
+    # No "user:" override on purpose: the entrypoint must start as root so it can
+    # chown/chmod PGDATA and /var/run/postgresql, then it drops to the postgres user.
+    # Forcing `user: 1000:1000` caused:
+    #   chmod: changing permissions of '/var/run/postgresql': Operation not permitted
     ports:
       - "5432:5432"
     environment:
@@ -12,7 +17,11 @@ services:
       - POSTGRES_PASSWORD=dev123
       - POSTGRES_DB=tradeit
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Postgres 18+ requires the mount at /var/lib/postgresql (the parent), NOT
+      # /var/lib/postgresql/data. Mounting at .../data makes the entrypoint abort with
+      #   "there appears to be PostgreSQL data in: /var/lib/postgresql/data (unused mount/volume)"
+      # even when the volume is completely empty.
+      - postgres_data:/var/lib/postgresql
 
   redis:
     container_name: tradeit_redis
@@ -22,38 +31,38 @@ services:
     volumes:
       - redis_data:/data
 
-  user-order-service:
-    build:
-      context: .
-      dockerfile: services/user-order-service/Dockerfile
-    container_name: tradeit_user_order_service
-    ports:
-      - "8000:8000"
-    environment:
-      - redis_addr=redis:6379
-      - redis_password=
-    depends_on:
-      - db
-      - redis
-    networks:
-      - tradeit_network
-
-  engine-service:
-    build:
-      context: .
-      dockerfile: services/engine-service/Dockerfile
-    container_name: tradeit_engine_service
-    ports:
-      - "8001:8001"
-    environment:
-      - redis_addr=redis:6379
-      - redis_password=
-    depends_on:
-      - db
-      - redis
-    networks:
-      - tradeit_network
-
+  # user-order-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/user-order-service/Dockerfile
+  #   container_name: tradeit_user_order_service
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - redis_addr=redis:6379
+  #     - redis_password=
+  #   depends_on:
+  #     - db
+  #     - redis
+  #   networks:
+  #     - tradeit_network
+  #
+  # engine-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/engine-service/Dockerfile
+  #   container_name: tradeit_engine_service
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     - redis_addr=redis:6379
+  #     - redis_password=
+  #   depends_on:
+  #     - db
+  #     - redis
+  #   networks:
+  #     - tradeit_network
+  #
 volumes:
   postgres_data:
   redis_data:

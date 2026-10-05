@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -11,7 +10,16 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var Key = []byte(os.Getenv("jwtkey"))
+// jwtKey returns the HMAC signing key for the JWT tokens.
+//
+// It is deliberately read on every call: a package level
+// `var Key = []byte(os.Getenv("jwtkey"))` is evaluated during package initialisation,
+// which runs BEFORE main() calls godotenv.Load(). In any setup where jwtkey is only
+// defined in .env (the documented setup) the key was therefore always empty, and a
+// token signed with an empty key - forgeable by anyone - was accepted.
+func jwtKey() []byte {
+	return []byte(os.Getenv("jwtkey"))
+}
 
 func CreateToken(userid uint64) string {
 
@@ -19,11 +27,10 @@ func CreateToken(userid uint64) string {
 		"sub": userid,
 		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	})
-	tokenstring, err := token.SignedString(Key)
+	tokenstring, err := token.SignedString(jwtKey())
 	if err != nil {
 		fmt.Print(err.Error())
 	}
-	fmt.Println(tokenstring)
 	return tokenstring
 }
 
@@ -38,11 +45,12 @@ func VerifyToken() gin.HandlerFunc {
 			if _, ok := Token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("invalid token signing method")
 			}
-			return Key, nil
+			return jwtKey(), nil
 		})
 		if err != nil {
+			// NOTE: a log.Fatalln here used to exit the whole process whenever any client
+			// sent a malformed/expired token. Reject the request instead.
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid Token"})
-			log.Fatalln("Invalid Token ", err)
 			return
 		}
 

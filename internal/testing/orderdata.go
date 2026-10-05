@@ -1,16 +1,9 @@
 package testing
 
 import (
-<<<<<<< HEAD:internal/testing/orderdata.go
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
 	"TradeIT/services/user-order-service/repo"
-=======
-	"TradeIT/database"
-	"TradeIT/engine"
-	"TradeIT/models"
-	"TradeIT/repo"
->>>>>>> parent of 6daa9c4 (Completed the Order Creation and Matching Pipeline.):testing/orderdata.go
 	"log"
 	"math"
 	"math/rand"
@@ -98,5 +91,4 @@ func GenerateAndLodgeOrders() {
 
 func Test() {
 	GenerateAndLodgeOrders()
-	engine.EngineTest()
 }

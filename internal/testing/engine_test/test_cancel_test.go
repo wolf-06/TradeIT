@@ -1,8 +1,8 @@
 package engine_test
 
 import (
-	"TradeIT/engine"
 	"TradeIT/internal/models"
+	"TradeIT/services/engine-service/engine"
 	"errors"
 	"fmt"
 	"testing"
@@ -15,21 +15,23 @@ func SetupOrderbook() *engine.Orderbook {
 	ob := engine.InitOrderBook()
 	ob.InsertOrder(models.Order{
 		MetaOrder: models.MetaOrder{
-			Id:       1,
-			Side:     "buy",
-			Price:    50,
-			Quantity: 10,
-			Status:   "pending",
+			Id:         1,
+			Order_Type: "limit",
+			Side:       "buy",
+			Price:      50,
+			Quantity:   10,
+			Status:     "pending",
 		},
 		Remq: 10,
 	})
 	ob.InsertOrder(models.Order{
 		MetaOrder: models.MetaOrder{
-			Id:       2,
-			Side:     "sell",
-			Price:    75,
-			Quantity: 5,
-			Status:   "pending",
+			Id:         2,
+			Order_Type: "limit",
+			Side:       "sell",
+			Price:      75,
+			Quantity:   5,
+			Status:     "pending",
 		},
 		Remq: 5,
 	})
@@ -63,6 +65,6 @@ func TestCancelNonExistentOrder(t *testing.T) {
 	ob := SetupOrderbook()
 	//ob.Unlock()
 	err := ob.CancelOrder(999)
-	expected := errors.New("order has been proceessed or does not exist")
+	expected := errors.New("ORDER_NOT_IN_MATCHER")
 	assert.EqualError(t, err, expected.Error(), "cancelling non-existent order should return specific error")
 }

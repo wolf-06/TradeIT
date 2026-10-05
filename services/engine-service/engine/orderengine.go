@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
@@ -21,8 +22,27 @@ type OrderEngine struct {
 	db              *gorm.DB
 }
 
-var cancellation = make(map[uint64]struct{})
-var modification = make(map[uint64]struct{})
+// cancellation/modification are shared between the order worker (reads) and the
+// cancellation worker (writes), so they must be guarded: concurrent map access would
+// otherwise abort the whole process.
+var (
+	stateMu      sync.Mutex
+	cancellation = make(map[uint64]struct{})
+	modification = make(map[uint64]struct{})
+)
+
+func isCancellationPending(orderId uint64) bool {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	_, exists := cancellation[orderId]
+	return exists
+}
+
+func markCancellationPending(orderId uint64) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	cancellation[orderId] = struct{}{}
+}
 
 func InitOrderEngine() *OrderEngine {
 	InitTrade()
@@ -48,10 +68,10 @@ func (engine *OrderEngine) ProcessOrderQueue() {
 		if err != nil {
 			fmt.Println("Error in umarshalling the order from the redis server: ", err)
 		}
-		if _, exists := cancellation[order.Id]; exists {
+		if isCancellationPending(order.Id) {
 			continue
 		}
-		fmt.Println("processing order of id: ", order.Id)
+		// fmt.Println("processing order of id: ", order.Id)
 		err = engine.ledger.ProcessOrder(order)
 		if err != nil {
 			fmt.Println("Error has occured in the matcher: ", err)
@@ -63,71 +83,79 @@ func (engine *OrderEngine) ProcessOrderQueue() {
 
 func (engine *OrderEngine) ProcessCancellationQueue() {
 	for {
-<<<<<<< HEAD:services/engine-service/engine/orderengine.go
 		//recieves the orders that are too be cancelled.
-		fmt.Println("Waiting for the cancellation request.")
-		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "CancelQueue").Result()
-		fmt.Println("Recieved Request")
-=======
-		//recieves the orders that are too be
+		// fmt.Println("Waiting for the cancellation request.")
 		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "cancel").Result()
->>>>>>> parent of 6daa9c4 (Completed the Order Creation and Matching Pipeline.):engine/orderengine.go
+		// fmt.Println("Recieved Request")
 		if err != nil {
 			log.Println("Error in processing the cancellation queue: ", err)
 			continue
 		}
-<<<<<<< HEAD:services/engine-service/engine/orderengine.go
-		fmt.Println(queueData)
-=======
-		//data is tranformed to the required types
->>>>>>> parent of 6daa9c4 (Completed the Order Creation and Matching Pipeline.):engine/orderengine.go
+		// fmt.Println(queueData)
 		data := strings.Split(string(queueData[1]), ":")
 		orderid, _ := strconv.ParseUint(data[0], 10, 64)
+		stock := ""
+		if len(data) > 1 {
+			stock = data[1]
+		}
 
-		result := engine.ledger.CancelOrder(data[1], orderid)
+		reply := engine.processCancellationRequest(stock, orderid)
 
-		if result != nil {
-			switch result.Error() {
-			case "ORDER_NOT_IN_MATCHER":
-				if !checkTrade(orderid) {
-					cancellation[orderid] = struct{}{}
-					fmt.Println("Cancelled Successfully")
-				} else {
-				}
-
-			case "ORDER_PARTIAL_CANCELLED":
-
-			case "ORDER_UNSUPPORTED_TYPE":
-				log.Println("Cancel failed: Unsupported order type.")
-
-			default:
-				log.Println("Cancel failed: ", result.Error())
-			}
-		} else {
-			log.Println("Cancel success: Order cancelled.")
+		// The user-order service blocks on this reply key (see repo.CancelOrder) and
+		// interprets "nil"/"order not reached the orderbook" as success, anything else
+		// as an error message. Nothing used to be published here, so every cancellation
+		// request waited for a reply that never arrived.
+		replyKey := "cancel:" + strconv.FormatUint(orderid, 10)
+		if err := engine.mod_redisClient.RPush(context.Background(), replyKey, reply).Err(); err != nil {
+			log.Println("Error in replying to the cancellation request for order ", orderid, ": ", err)
 		}
 	}
 }
 
-<<<<<<< HEAD:services/engine-service/engine/orderengine.go
+// processCancellationRequest performs a cancellation request and returns the payload
+// the caller expects on the reply queue.
+func (engine *OrderEngine) processCancellationRequest(stock string, orderid uint64) string {
+	// A second request for an order that was already handled must fail, otherwise
+	// cancelling twice silently reports success.
+	if isCancellationPending(orderid) {
+		return "ORDER_ALREADY_CANCELLED"
+	}
+
+	result := engine.ledger.CancelOrder(stock, orderid)
+	switch {
+	case result == nil:
+		markCancellationPending(orderid)
+		log.Println("Cancel success: Order cancelled.")
+		return "nil"
+	case result.Error() == "ORDER_NOT_IN_MATCHER":
+		if checkTrade(orderid) {
+			// the order was already executed, there is nothing left to cancel
+			return "ORDER_EXECUTED"
+		}
+		// The order has not reached the order book yet: remember the request so the
+		// incoming order is dropped when it arrives.
+		markCancellationPending(orderid)
+		// fmt.Println("Cancelled Successfully")
+		return "order not reached the orderbook"
+	default:
+		log.Println("Cancel failed: ", result.Error())
+		return result.Error()
+	}
+}
+
 func (engine *OrderEngine) ProccessQuantityModification() {
-	fmt.Println("---Starting the Quantity Modification Request Queue---")
+	// fmt.Println("---Starting the Quantity Modification Request Queue---")
 	for {
 		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "PriceModifyQueue").Result()
-		fmt.Println("Recieved Request")
+		// fmt.Println("Recieved Request")
 		if err != nil {
 			log.Println("Error in processing the cancellation queue: ", err)
 			continue
 		}
-		fmt.Println(queueData)
+		// fmt.Println(queueData)
 		data := strings.Split(string(queueData[1]), ":")
 		orderid, _ := strconv.ParseUint(data[0], 10, 64)
 
 		_ = engine.ledger.CancelOrder(data[1], orderid)
 	}
-=======
-func EngineTest() {
-	engine := InitOrderEngine()
-	engine.ProcessOrderQueue()
->>>>>>> parent of 6daa9c4 (Completed the Order Creation and Matching Pipeline.):engine/orderengine.go
 }

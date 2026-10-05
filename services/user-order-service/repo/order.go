@@ -8,10 +8,17 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
+
+// cancelReplyTimeout is how long we wait for the engine to answer a cancel/modify
+// request. The literal values used before were wrong: `10` meant 10 nanoseconds (redis
+// truncates to 1s) and `0` blocks forever.
+const cancelReplyTimeout = 10 * time.Second
 
 var orderPool = InitOrderPool()
 
@@ -36,8 +43,32 @@ var mod_client = redis.NewClient(&redis.Options{
 })
 
 type Query struct {
-	Parameter string `json:"parameter"`
-	Value     any    `json:"value"`
+	Parameter string `json:"parameter" binding:"required"`
+	Value     any    `json:"value" binding:"required"`
+}
+
+// filterableColumns are the only columns that /order/sort may filter on. The parameter
+// used to be concatenated straight into the SQL string, so anything else (e.g.
+// "1=1 OR stock") allowed reading other users' orders.
+var filterableColumns = map[string]struct{}{
+	"id":         {},
+	"user_id":    {},
+	"order_type": {},
+	"side":       {},
+	"stock":      {},
+	"price":      {},
+	"avg_price":  {},
+	"quantity":   {},
+	"status":     {},
+	"created_at": {},
+	"remq":       {},
+}
+
+// IsFilterableColumn reports whether parameter is a column of the orders table that
+// callers are allowed to filter on.
+func IsFilterableColumn(parameter string) bool {
+	_, ok := filterableColumns[parameter]
+	return ok
 }
 
 func CreateOrder(db *gorm.DB, metaOrder models.MetaOrder) bool {
@@ -102,17 +133,28 @@ func CancelOrder(db *gorm.DB, order_id uint64) error {
 	if result := db.Where("id=?", order_id).Find(&order); result.Error != nil {
 		log.Println("error in fetching data from order database for cancelling order id: ", order_id, "\nError: ", result.Error)
 		return errors.New("internal error")
+	} else if result.RowsAffected == 0 {
+		// Nothing to cancel; asking the engine would only produce a confusing reply.
+		return errors.New("order not found")
 	}
-	value := string(order_id) + ":" + order.Stock
+	value := strconv.FormatUint(order_id, 10) + ":" + order.Stock
+
+	// Replies for earlier attempts (a previous run that timed out, or a retry) stay in
+	// this list; drop them so we never read a stale answer to a newer request.
+	replyKey := key + ":" + strconv.FormatUint(order_id, 10)
+	if err := mod_client.Del(context.Background(), replyKey).Err(); err != nil {
+		log.Println("could not clear the reply queue ", replyKey, ": ", err)
+	}
+
 	if err := mod_producer.RPush(context.Background(), key, value).Err(); err != nil {
 		log.Println("Error in publishing a request to cancel order with id: ", order_id, "\nError: ", err)
 		return errors.New("internal error")
 	}
 
-	key = key + ":" + string(order_id)
-	status, err := mod_client.BLPop(context.Background(), 10, key).Result()
-	if err != nil {
-		log.Println("Error in getting the cancellation status from the order with ")
+	status, err := mod_client.BLPop(context.Background(), cancelReplyTimeout, replyKey).Result()
+	if err != nil || len(status) < 2 {
+		log.Println("no cancellation reply from the order engine for order ", order_id, ": ", err)
+		return errors.New("internal error")
 	}
 	if (status[1] == "nil") || status[1] == "order not reached the orderbook" {
 		return nil
@@ -127,20 +169,29 @@ func ModifyPrice(db *gorm.DB, order_id uint64, newPrice float64) error {
 	if result := db.Where("id=?", order_id).Find(&order); result.Error != nil {
 		log.Println("error in fetching data from order database for cancelling order id: ", order_id, "\nError: ", result.Error)
 		return errors.New("internal error")
+	} else if result.RowsAffected == 0 {
+		return errors.New("order not found")
 	}
 	id_str := strconv.FormatUint(order_id, 10)
 	price_str := fmt.Sprintf("%.2f", newPrice)
 	value := id_str + ":" + order.Stock + ":" + price_str
 	fmt.Println(value)
+
+	// Same as CancelOrder: discard replies left over from earlier attempts first.
+	replyKey := key + ":" + id_str
+	if err := mod_client.Del(context.Background(), replyKey).Err(); err != nil {
+		log.Println("could not clear the reply queue ", replyKey, ": ", err)
+	}
+
 	if err := mod_producer.RPush(context.Background(), key, value).Err(); err != nil {
 		log.Println("Error in publishing a request to modify price of order with id: ", order_id, "\nError: ", err)
 		return errors.New("internal error")
 	}
 
-	key = key + ":" + id_str
-	status, err := mod_client.BLPop(context.Background(), 0, key).Result()
-	if err != nil {
-		log.Println("Error in getting the cancellation status from the order")
+	status, err := mod_client.BLPop(context.Background(), cancelReplyTimeout, replyKey).Result()
+	if err != nil || len(status) < 2 {
+		log.Println("no modification reply from the order engine for order ", order_id, ": ", err)
+		return errors.New("internal error")
 	}
 	if (status[1] == "nil") || status[1] == "order not reached the orderbook" {
 		return nil

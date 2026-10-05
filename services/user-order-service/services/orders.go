@@ -3,8 +3,8 @@ package services
 import (
 	"TradeIT/internal/database"
 	repo "TradeIT/services/user-order-service/repo"
-	"fmt"
-	"log"
+	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -26,9 +26,17 @@ func (os *OrderService) CreateOrderService(c *gin.Context) bool {
 	var order = os.op.acquireOrder()
 	defer os.op.releaseOrder(order)
 	if err := c.BindJSON(&order); err != nil {
-		log.Fatalln("Json Binding error: ", err)
+		// NOTE: this used to be log.Fatalln, which killed the whole service on any
+		// malformed payload. Reject the request instead.
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
 		return false
 	}
+	// The order always belongs to the authenticated caller; a user_id supplied in the
+	// body is ignored so nobody can place orders on another account.
+	user_id, _ := c.Get("userid")
+	order.User_id = int(user_id.(float64))
+	order.Created_at = time.Now()
+	order.Status = "pending"
 	return repo.CreateOrder(os.db, *order)
 }
 
@@ -42,7 +50,20 @@ func (os *OrderService) GetOrderByParameterService(c *gin.Context) []byte {
 	var Query repo.Query
 	user_id, _ := c.Get("userid")
 	if err := c.BindJSON(&Query); err != nil {
-		fmt.Println("Error in binding JSON: ", err)
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return nil
+	}
+	// repo.GetOrders concatenates Query.Parameter into the SQL and asserts Value to string;
+	// catch the bad type here so it becomes a 400 instead of a panic/500.
+	if _, ok := Query.Value.(string); !ok {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "value must be a string"})
+		return nil
+	}
+	// Only the whitelisted column names may be used as a filter, otherwise the
+	// parameter is an SQL injection vector.
+	if !repo.IsFilterableColumn(Query.Parameter) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid filter parameter: " + Query.Parameter})
+		return nil
 	}
 	json := repo.GetOrders(os.db, user_id.(float64), Query)
 	return json

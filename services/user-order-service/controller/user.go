@@ -32,32 +32,48 @@ func (u *UserController) InitUserControllerRoutes(router *gin.Engine) {
 
 func (u *UserController) RegisterUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id := u.userService.RegisterUserService(c)
+		if c.IsAborted() { // service already replied with 400/500
+			return
+		}
 		c.JSON(200, gin.H{
-			"user id": u.userService.RegisterUserService(c),
+			"user id": id,
 		})
 	}
 }
 
 func (u *UserController) LoginUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		token := u.userService.LoginUserService(c)
+		if c.IsAborted() {
+			return
+		}
 		c.JSON(200, gin.H{
-			"token": u.userService.LoginUserService(c),
+			"token": token,
 		})
 	}
 }
 
 func (u *UserController) updateEmail() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		token := u.userService.UpdateUserEmailService(c)
+		if c.IsAborted() {
+			return
+		}
 		c.JSON(200, gin.H{
-			"token": u.userService.UpdateUserEmailService(c),
+			"token": token,
 		})
 	}
 }
 
 func (u *UserController) updatePasswd() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		token := u.userService.UpdateUserPasswdService(c)
+		if c.IsAborted() {
+			return
+		}
 		c.JSON(200, gin.H{
-			"token": u.userService.UpdateUserPasswdService(c),
+			"token": token,
 		})
 	}
 }

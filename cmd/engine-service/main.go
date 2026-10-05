@@ -3,7 +3,7 @@ package main
 import (
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
-	test "TradeIT/internal/testing"
+	//test "TradeIT/internal/testing"
 	"TradeIT/services/engine-service/engine"
 	"fmt"
 	"log"
@@ -31,7 +31,7 @@ func main() {
 	go orderEngine.ProcessCancellationQueue()
 
 	// Start test (optional)
-	go test.Test()
+	// go test.Test()
 
 	// Keep the service running
 	select {}

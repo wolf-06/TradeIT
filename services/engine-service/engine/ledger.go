@@ -3,7 +3,7 @@ package engine
 import (
 	"TradeIT/internal/models"
 	"errors"
-	"fmt"
+	// "fmt" - every debug print in this file is commented out
 	"log"
 )
 
@@ -20,7 +20,7 @@ func InitLedger() *Ledger {
 
 func (ld *Ledger) ProcessOrder(order models.Order) error {
 	ob, exists := ld.ent[order.Stock]
-	fmt.Println(order.Id, " reached the ledger")
+	// fmt.Println(order.Id, " reached the ledger")
 	if !exists {
 		ob = InitOrderBook()
 		ld.ent[order.Stock] = ob

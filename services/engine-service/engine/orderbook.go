@@ -223,7 +223,7 @@ func (ob *Orderbook) Matcher_limit(order models.Order) {
 
 	if ob.asks_prices.Len() == 0 && ob.bids_prices.Len() == 0 {
 		//close the matcher and orderbook
-		fmt.Println("Time to close the orderbook and matcher")
+		// fmt.Println("Time to close the orderbook and matcher")
 	}
 
 }
@@ -257,24 +257,24 @@ func (ob *Orderbook) Matcher(order models.Order) error {
 	}
 
 	for mainFlag {
-		fmt.Println(order.Id, "reached the matcher is inside the main loop")
+		// fmt.Println(order.Id, "reached the matcher is inside the main loop")
 		var flag bool
 		var orderListType string
 		flag = false
-		fmt.Println(order)
+		// fmt.Println(order)
 		if counterMarketOrders.Size != 0 {
 			orderList = counterMarketOrders
 			orderListType = "market"
 			flag = true
-			fmt.Println(flag)
+			// fmt.Println(flag)
 		} else if len(counterLimitOrders) != 0 {
-			fmt.Println("inside the limit section")
+			// fmt.Println("inside the limit section")
 			orderListType = "limit"
 			if order.Side == "buy" {
 
 				bestCounterPrice = counterMinHeap.Peek()
 				if orderType == "limit" && bestCounterPrice > order.Price {
-					fmt.Println("Breaking")
+					// fmt.Println("Breaking")
 					break
 				}
 				orderList, flag = counterLimitOrders[bestCounterPrice]
@@ -286,7 +286,7 @@ func (ob *Orderbook) Matcher(order models.Order) error {
 
 				bestCounterPrice = counterMaxHeap.Peek()
 				if orderType == "limit" && bestCounterPrice < order.Price {
-					fmt.Println("Breaking")
+					// fmt.Println("Breaking")
 					break
 				}
 				orderList, flag = counterLimitOrders[bestCounterPrice]
@@ -303,7 +303,7 @@ func (ob *Orderbook) Matcher(order models.Order) error {
 		} else {
 			for node = orderList.Head; node != nil && order.Remq > 0; node = node.Next {
 
-				fmt.Println("Matching Order in matcher")
+				// fmt.Println("Matching Order in matcher")
 				matchQuantity := min(order.Remq, node.Order_.Remq)
 				order.Remq -= matchQuantity
 				node.Order_.Remq -= matchQuantity
@@ -339,8 +339,8 @@ func (ob *Orderbook) Matcher(order models.Order) error {
 					trade.Seller, trade.BidOrderID = order.User_id, order.Id
 					trade.Buyer, trade.AskOrderID = node.Order_.User_id, node.Order_.Id
 				}
-				fmt.Println("Sent to trade register")
-				fmt.Println("Trade:\n", trade)
+				// fmt.Println("Sent to trade register")
+				// fmt.Println("Trade:\n", trade)
 				//registers the trade and releases the trade to objectPool back
 				go func(trade *models.TradeDetails) {
 					registerTrades(trade)
@@ -387,10 +387,10 @@ func (ob *Orderbook) Matcher(order models.Order) error {
 		}
 	}
 	if order.Remq > 0 {
-		fmt.Println("inserting order")
+		// fmt.Println("inserting order")
 		err := ob.internalInsertOrder(order)
 		if err != nil {
-			fmt.Println(err)
+			// fmt.Println(err)
 			return err
 		}
 	}
@@ -409,7 +409,7 @@ func (ob *Orderbook) CancelOrder(orderId uint64) error {
 	defer ob.mu.Unlock()
 	node, exists := ob.orderTable[orderId]
 	if !exists {
-		fmt.Println("Order not in Orderbook")
+		// fmt.Println("Order not in Orderbook")
 		return errors.New("ORDER_NOT_IN_MATCHER")
 	}
 	difference := node.Order_.Quantity - node.Order_.Remq
