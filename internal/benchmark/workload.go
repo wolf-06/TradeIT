@@ -231,7 +231,7 @@ func (g *Generator) Next() models.Order {
 			Order_Type: orderType,
 			Side:       side,
 			Stock:      sym,
-			Price:      price,
+			Price:      models.PriceToInt(price),
 			Quantity:   qty,
 			Status:     "pending",
 			Created_at: time.Now(),

@@ -2,6 +2,7 @@ package services
 
 import (
 	"TradeIT/internal/database"
+	"TradeIT/internal/models"
 	repo "TradeIT/services/user-order-service/repo"
 	"net/http"
 	"time"
@@ -9,6 +10,17 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// placeOrderRequest is the wire form of POST /order/create. Price is a decimal on the
+// wire; the service converts it to the engine's scaled integer representation so the
+// matching service always receives integer prices.
+type placeOrderRequest struct {
+	Order_Type string  `json:"orderType" binding:"required,oneof=limit market"`
+	Side       string  `json:"type" binding:"required,oneof=buy sell"`
+	Stock      string  `json:"stock" binding:"required"`
+	Price      float64 `json:"price" binding:"required_if=Order_Type limit,omitempty,gt=0"`
+	Quantity   int     `json:"quantity" binding:"required,gt=0"`
+}
 
 type OrderService struct {
 	db *gorm.DB
@@ -23,18 +35,27 @@ func InitOrderService() *OrderService {
 }
 
 func (os *OrderService) CreateOrderService(c *gin.Context) bool {
-	var order = os.op.acquireOrder()
-	defer os.op.releaseOrder(order)
-	if err := c.BindJSON(&order); err != nil {
+	var req placeOrderRequest
+	if err := c.BindJSON(&req); err != nil {
 		// NOTE: this used to be log.Fatalln, which killed the whole service on any
 		// malformed payload. Reject the request instead.
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
 		return false
 	}
+	order := os.op.acquireOrder()
+	defer os.op.releaseOrder(order)
 	// The order always belongs to the authenticated caller; a user_id supplied in the
 	// body is ignored so nobody can place orders on another account.
 	user_id, _ := c.Get("userid")
 	order.User_id = int(user_id.(float64))
+	order.Order_Type = req.Order_Type
+	order.Side = req.Side
+	order.Stock = req.Stock
+	// Convert the decimal wire price into the engine's integer representation. This is
+	// the single conversion point: everything downstream (DB, Redis queue, matcher)
+	// works with scaled integers only.
+	order.Price = models.PriceToInt(req.Price)
+	order.Quantity = req.Quantity
 	order.Created_at = time.Now()
 	order.Status = "pending"
 	return repo.CreateOrder(os.db, *order)

@@ -9,6 +9,10 @@ type TradePool struct {
 	pool sync.Pool
 }
 
+// tradePool recycles models.TradeDetails between fills. It is package-level because both
+// the matcher (which acquires) and the async trade registrar (which releases) use it.
+var tradePool = InitTradePool()
+
 func InitTradePool() *TradePool {
 	var tp TradePool
 	tp.pool = sync.Pool{

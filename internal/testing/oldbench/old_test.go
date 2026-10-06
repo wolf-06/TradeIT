@@ -91,7 +91,7 @@ func generateOrders(n uint64) []models.Order {
 				Order_Type: orderType,
 				Side:       orderSide,
 				Stock:      "TEST",
-				Price:      roundToTwoDecimal(price),
+				Price:      models.PriceToInt(price),
 				Quantity:   quantity,
 				Status:     "pending",
 				Created_at: time.Now(),

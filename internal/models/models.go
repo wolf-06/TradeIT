@@ -3,8 +3,28 @@ package models
 import (
 	"TradeIT/internal/database"
 	"log"
+	"math"
 	"time"
 )
+
+// PriceScale is the number of integer units in one currency unit. All prices in the
+// engine are integer values scaled by this factor: a price of 185.40 is represented as
+// 18540. The user-order service converts the client's decimal price into this integer
+// form at its boundary, so the matching engine only ever sees scaled integers.
+const PriceScale int64 = 100
+
+// PriceToInt converts a decimal price into the scaled integer representation, rounding
+// to the nearest integer unit. This is the conversion the user-order service applies
+// before an order is persisted or published to the engine.
+func PriceToInt(price float64) int64 {
+	return int64(math.Round(price * float64(PriceScale)))
+}
+
+// PriceToFloat converts a scaled integer price back to a decimal value, for display or
+// for clients that still expect a decimal.
+func PriceToFloat(price int64) float64 {
+	return float64(price) / float64(PriceScale)
+}
 
 // NOTE: gin's binder only inspects the "binding" struct tag - it reconfigures
 // go-playground/validator with SetTagName("binding") (see gin/binding/default_validator.go).
@@ -35,9 +55,10 @@ type MetaOrder struct {
 	Side       string `json:"type" binding:"required,oneof=buy sell"`
 	Stock      string `json:"stock" binding:"required"`
 	// Price is required (>0) for limit orders; market orders legitimately carry no price,
-	// so it is only checked when present.
-	Price      float64   `json:"price" gorm:"type:decimal" binding:"required_if=Order_Type limit,omitempty,gt=0"`
-	AvgPrice   float64   `json:"avgPrice" gorm:"type:decimal"`
+	// so it is only checked when present. It is stored in the scaled integer form
+	// (see PriceScale), never as a float.
+	Price      int64     `json:"price" gorm:"type:bigint" binding:"required_if=Order_Type limit,omitempty,gt=0"`
+	AvgPrice   int64     `json:"avgPrice" gorm:"type:bigint"`
 	Quantity   int       `json:"quantity" binding:"required,gt=0"`
 	Status     string    `json:"status"`
 	Created_at time.Time `json:"created_at"`
@@ -56,7 +77,7 @@ type TradeDetails struct {
 	BidOrderID  uint64    `json:"bidorder_id"`
 	AskOrderID  uint64    `json:"askorder_id"`
 	Quantity    int       `json:"quantity"`
-	Price       float64   `json:"price" gorm:"type:decimal"`
+	Price       int64     `json:"price" gorm:"type:bigint"`
 	Executed_at time.Time `json:"execution_time"`
 }
 

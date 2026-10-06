@@ -41,7 +41,7 @@ func (ld *Ledger) CancelOrder(stock string, order_id uint64) error {
 	return ob.CancelOrder(order_id)
 }
 
-func (ld *Ledger) ModifyPrice(stock string, order_id uint64, newPrice float64) error {
+func (ld *Ledger) ModifyPrice(stock string, order_id uint64, newPrice int64) error {
 	ob, exists := ld.ent[stock]
 	if !exists {
 		return errors.New("INVALID STOCK")

@@ -30,6 +30,9 @@ func main() {
 	// Start processing cancellation queue
 	go orderEngine.ProcessCancellationQueue()
 
+	// Start processing price modification queue
+	go orderEngine.ProccessQuantityModification()
+
 	// Start test (optional)
 	go test.Test()
 

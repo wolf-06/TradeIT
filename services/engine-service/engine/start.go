@@ -10,6 +10,8 @@ func start() {
 	// fmt.Println("Starting the engine")
 	log.Println("Started the cancellation processing")
 	go engine.ProcessCancellationQueue()
+	log.Println("Started the price modification processing")
+	go engine.ProccessQuantityModification()
 	log.Println("starting the order Processing ")
 	engine.ProcessOrderQueue()
 }

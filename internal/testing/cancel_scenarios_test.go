@@ -35,7 +35,7 @@ func setupTestDBAndEngine() {
 		// These scenarios use fixed order ids. Leftovers from a previous run would make
 		// CreateOrder fail on the primary key and would let checkTrade see stale trades,
 		// so start every run from a clean slate.
-		testOrderIDs := []uint64{1001, 1002, 1003, 1004, 1005}
+		testOrderIDs := []uint64{1001, 1002, 1003, 1004, 1005, 2001, 2002}
 		if err := database.SetDB().Where("id IN ?", testOrderIDs).Delete(&models.Order{}).Error; err != nil {
 			log.Println("warning: could not remove leftover test orders: ", err)
 		}
@@ -46,6 +46,7 @@ func setupTestDBAndEngine() {
 		testOrderEngine = engine.InitOrderEngine()
 		go testOrderEngine.ProcessOrderQueue()
 		go testOrderEngine.ProcessCancellationQueue()
+		go testOrderEngine.ProccessQuantityModification()
 	})
 }
 
@@ -70,7 +71,7 @@ func waitForTrade(t *testing.T, orderID uint64, stock string) {
 	t.Fatalf("the engine never registered the trade for order %d", orderID)
 }
 
-func createTestOrder(orderId uint64, userID int, stock, side string, price float64, quantity int) models.MetaOrder {
+func createTestOrder(orderId uint64, userID int, stock, side string, price int64, quantity int) models.MetaOrder {
 	return models.MetaOrder{
 		Id:         orderId,
 		User_id:    userID,
@@ -135,4 +136,30 @@ func TestCancelExecutedOrder(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error when cancelling executed order, got nil")
 	}
+}
+
+// TestModifyPriceExistingOrder drives the price-modification queue end to end. A resting
+// buy is re-priced above an incoming sell; if the engine actually modifies (rather than
+// cancels) and replies on the reply key, the sell crosses it and a trade is recorded.
+func TestModifyPriceExistingOrder(t *testing.T) {
+	setupTestDBAndEngine()
+	db := database.SetDB()
+
+	buy := createTestOrder(2001, 1, "MSFT", "buy", models.PriceToInt(100), 10)
+	if ok := repo.CreateOrder(db, buy); !ok {
+		t.Fatalf("could not create the resting buy order")
+	}
+	// Let the order worker rest the buy on the book before modifying it; a modify that
+	// arrives first is reported as ORDER_ALREADY_PROCESSED.
+	time.Sleep(500 * time.Millisecond)
+
+	if err := repo.ModifyPrice(db, buy.Id, 110); err != nil {
+		t.Fatalf("modify price should have succeeded, got: %v", err)
+	}
+
+	// This sell does not cross the original 100 bid, but does cross the re-priced 110 bid.
+	sell := createTestOrder(2002, 2, "MSFT", "sell", models.PriceToInt(105), 10)
+	repo.CreateOrder(db, sell)
+
+	waitForTrade(t, buy.Id, buy.Stock)
 }

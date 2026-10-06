@@ -149,13 +149,39 @@ func (engine *OrderEngine) ProccessQuantityModification() {
 		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "PriceModifyQueue").Result()
 		// fmt.Println("Recieved Request")
 		if err != nil {
-			log.Println("Error in processing the cancellation queue: ", err)
+			log.Println("Error in processing the price modification queue: ", err)
 			continue
 		}
-		// fmt.Println(queueData)
+		// The user-order service publishes "orderId:stock:price", where price is the
+		// scaled integer form (see repo.ModifyPrice / models.PriceToInt).
 		data := strings.Split(string(queueData[1]), ":")
-		orderid, _ := strconv.ParseUint(data[0], 10, 64)
+		if len(data) < 3 {
+			log.Println("Malformed price modification request: ", string(queueData[1]))
+			continue
+		}
+		orderid, err := strconv.ParseUint(data[0], 10, 64)
+		if err != nil {
+			log.Println("Invalid order id in price modification request: ", data[0])
+			continue
+		}
+		stock := data[1]
+		newPrice, err := strconv.ParseInt(data[2], 10, 64)
+		if err != nil {
+			log.Println("Invalid price in price modification request: ", data[2])
+			continue
+		}
 
-		_ = engine.ledger.CancelOrder(data[1], orderid)
+		result := engine.ledger.ModifyPrice(stock, orderid, newPrice)
+
+		// The user-order service blocks on this reply key (see repo.ModifyPrice) and
+		// interprets "nil" as success, anything else as an error message.
+		reply := "nil"
+		if result != nil {
+			reply = result.Error()
+		}
+		replyKey := "PriceModifyQueue:" + strconv.FormatUint(orderid, 10)
+		if err := engine.mod_redisClient.RPush(context.Background(), replyKey, reply).Err(); err != nil {
+			log.Println("Error in replying to the price modification request for order ", orderid, ": ", err)
+		}
 	}
 }

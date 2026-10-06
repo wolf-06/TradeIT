@@ -130,7 +130,7 @@ func TestStressScenario(t *testing.T) {
 		if i%2 == 0 {
 			side = "sell"
 		}
-		ob.Matcher(models.Order{MetaOrder: models.MetaOrder{Id: uint64(1000 + i), Order_Type: "limit", Side: side, Price: float64(100 + i%5), Quantity: 1, Status: "pending"}, Remq: 1})
+		ob.Matcher(models.Order{MetaOrder: models.MetaOrder{Id: uint64(1000 + i), Order_Type: "limit", Side: side, Price: int64(100 + i%5), Quantity: 1, Status: "pending"}, Remq: 1})
 		// if i%15 == 0 {
 		// 	_ = ob.CancelOrder(uint64(1000 + i))
 		// }

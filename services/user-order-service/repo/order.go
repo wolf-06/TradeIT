@@ -173,7 +173,9 @@ func ModifyPrice(db *gorm.DB, order_id uint64, newPrice float64) error {
 		return errors.New("order not found")
 	}
 	id_str := strconv.FormatUint(order_id, 10)
-	price_str := fmt.Sprintf("%.2f", newPrice)
+	// The engine works only in scaled integer prices, so convert here (the user-order
+	// service is the single conversion boundary) before publishing the request.
+	price_str := strconv.FormatInt(models.PriceToInt(newPrice), 10)
 	value := id_str + ":" + order.Stock + ":" + price_str
 	fmt.Println(value)
 

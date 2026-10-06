@@ -25,7 +25,7 @@ func OrderTest() {
 		Order_Type: "limit",
 		Side:       "buy",
 		Stock:      "TCS",
-		Price:      roundToTwoDecimal(75), // Use our rounding function
+		Price:      models.PriceToInt(75), // scaled integer price
 		Quantity:   100,
 		Status:     "pending",
 		Created_at: time.Now(),
@@ -40,7 +40,7 @@ func OrderTest() {
 		Order_Type: "limit",
 		Side:       "sell",
 		Stock:      "TCS",
-		Price:      roundToTwoDecimal(70), // Use our rounding function
+		Price:      models.PriceToInt(70), // scaled integer price
 		Quantity:   100,
 		Status:     "pending",
 		Created_at: time.Now(),
@@ -80,7 +80,7 @@ func GenerateAndLodgeOrders() {
 			Order_Type: orderType,
 			Side:       side,
 			Stock:      stock,
-			Price:      roundToTwoDecimal(price),
+			Price:      models.PriceToInt(price),
 			Quantity:   quantity,
 			Status:     status,
 			Created_at: time.Now(),
