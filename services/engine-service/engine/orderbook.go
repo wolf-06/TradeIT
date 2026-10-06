@@ -3,11 +3,18 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"TradeIT/internal/models"
 )
+
+// matchLoopLimit bounds the iterations of a single order's match loop. A legitimate order
+// matches at most one resting node per unit of remaining quantity (plus a few skips over
+// stale levels), so this is far above any real workload. Exceeding it means the loop is
+// not making progress and would otherwise spin forever.
+const matchLoopLimit = 1 << 17 // 131072
 
 // Orderbook is an array-based (ladder) limit order book with integer prices.
 //
@@ -137,7 +144,15 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 		counterCount = &ob.buyCount
 	}
 
+	iterations := 0
 	for order.Remq > 0 {
+		iterations++
+		if iterations > matchLoopLimit {
+			// Defensive backstop: a well-formed book never reaches this. Bail out instead of
+			// spinning; the order will simply rest with whatever quantity is left.
+			log.Printf("engine: match loop exceeded %d iterations for order %d (remq=%d); aborting match", matchLoopLimit, order.Id, order.Remq)
+			break
+		}
 		var node *Node
 
 		if counterMarket.size > 0 {
@@ -154,7 +169,11 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 			}
 			lvl := counterLimit.levels[counterLimit.best]
 			if lvl == nil || lvl.size == 0 {
+				prevBest := counterLimit.best
 				counterLimit.removeIfEmpty(bestPrice)
+				if counterLimit.best == prevBest {
+					break // the best price cannot advance: stop rather than spin
+				}
 				continue
 			}
 			node = lvl.head
@@ -163,6 +182,17 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 		}
 
 		matchQuantity := min(order.Remq, node.Order_.Remq)
+		if matchQuantity <= 0 {
+			// The head node has no remaining quantity but is still linked. Detach it so
+			// the loop always makes progress instead of spinning and re-releasing the
+			// same node into the pool. If it cannot be detached, stop rather than spin.
+			if !ob.removeNode(node) {
+				break
+			}
+			delete(ob.orderTable, node.Order_.Id)
+			releaseNode(node)
+			continue
+		}
 		order.Remq -= matchQuantity
 		node.Order_.Remq -= matchQuantity
 
@@ -204,17 +234,16 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 		enqueueTrade(trade)
 
 		if node.Order_.Remq == 0 {
-			if node.typ == typeMarket {
-				counterMarket.unlink(node)
-			} else if lvl := counterLimit.getLevel(node.Order_.Price); lvl != nil {
-				lvl.unlink(node)
-				counterLimit.removeIfEmpty(node.Order_.Price)
-			}
+			// Detach first, and only recycle the node if it was actually removed:
+			// releasing a still-linked node would poison the shared node pool.
+			removed := ob.removeNode(node)
 			delete(ob.orderTable, node.Order_.Id)
 			node.Order_.AvgPrice = node.Order_.AvgPrice / int64(node.Order_.Quantity)
 			*counterCount--
 			updateOrderStatusExecuted(node.Order_)
-			releaseNode(node)
+			if removed {
+				releaseNode(node)
+			}
 		}
 
 		if order.Remq == 0 {
@@ -232,27 +261,33 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 	return nil
 }
 
-// removeNode unlinks a node from whichever queue currently holds it.
-func (ob *Orderbook) removeNode(n *Node) {
+// removeNode unlinks a node from whichever queue currently holds it and reports whether it
+// actually detached the node. It keys off the node's own side/type, so it does not depend
+// on which counter structure selected the node, and it is safe to call when the node may
+// already be gone.
+func (ob *Orderbook) removeNode(n *Node) bool {
 	if n.typ == typeMarket {
 		if n.side == sideBuy {
 			ob.marketBuyOrders.unlink(n)
 		} else {
 			ob.marketSellOrders.unlink(n)
 		}
-		return
+		return true
 	}
 	if n.side == sideBuy {
 		if lvl := ob.bids.getLevel(n.Order_.Price); lvl != nil {
 			lvl.unlink(n)
 			ob.bids.removeIfEmpty(n.Order_.Price)
+			return true
 		}
-		return
+		return false
 	}
 	if lvl := ob.asks.getLevel(n.Order_.Price); lvl != nil {
 		lvl.unlink(n)
 		ob.asks.removeIfEmpty(n.Order_.Price)
+		return true
 	}
+	return false
 }
 
 // CancelOrder cancels a resting order. A partially filled order is removed and reported

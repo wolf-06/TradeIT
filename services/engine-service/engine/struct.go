@@ -164,8 +164,14 @@ func (l *ladder) grow(price int64) {
 	} else {
 		newLen = idx + 1
 	}
-	// Slack so repeated growth is amortized.
-	newLen += newLen/2 + 64
+	// Add slack proportional to the amount we are ADDING, never to the total window size.
+	// The previous "+ newLen/2" compounded on every out-of-range price and grew the window
+	// (and its bitmap) to tens of millions of slots for a bounded price range, because the
+	// origin follows each new low. Tying the slack to the delta keeps the window within a
+	// small multiple of the actual price span.
+	if added := newLen - oldLen; added > 0 {
+		newLen += added/2 + 64
+	}
 
 	newLevels := make([]*priceLevel, newLen)
 	newWords := make([]uint64, (newLen+63)/64)

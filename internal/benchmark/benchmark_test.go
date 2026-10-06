@@ -62,3 +62,27 @@ func BenchmarkMatcherProductionLike(b *testing.B) {
 		b.ReportMetric(float64(total)/secs, "orders/sec")
 	}
 }
+
+// TestMatcherMultiSymbolWorkloadTerminates guards against a non-advancing match loop. The
+// four-symbol, seed-42 flow used by BenchmarkMatcherProductionLike previously made
+// Orderbook.Matcher spin and exhaust memory (it was observed growing past 3.8 GB and
+// swapping). The same workload must simply complete here.
+func TestMatcherMultiSymbolWorkloadTerminates(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Seed = 42
+
+	work := NewGenerator(cfg).Generate(100000)
+
+	books := map[string]*engine.Orderbook{}
+	for i := range work.Orders {
+		o := work.Orders[i]
+		ob := books[o.Stock]
+		if ob == nil {
+			ob = engine.InitOrderBook()
+			books[o.Stock] = ob
+		}
+		if err := ob.Matcher(o); err != nil {
+			t.Fatalf("matcher error on order %d: %v", o.Id, err)
+		}
+	}
+}

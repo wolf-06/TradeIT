@@ -71,27 +71,22 @@ func (engine *OrderEngine) ProcessOrderQueue() {
 		if isCancellationPending(order.Id) {
 			continue
 		}
-		// fmt.Println("processing order of id: ", order.Id)
 		err = engine.ledger.ProcessOrder(order)
 		if err != nil {
 			fmt.Println("Error has occured in the matcher: ", err)
 			//resolve the error
 		}
-		// order = models.Order{} // resets the data, to avoid redundancy
 	}
 }
 
 func (engine *OrderEngine) ProcessCancellationQueue() {
 	for {
 		//recieves the orders that are too be cancelled.
-		// fmt.Println("Waiting for the cancellation request.")
 		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "cancel").Result()
-		// fmt.Println("Recieved Request")
 		if err != nil {
 			log.Println("Error in processing the cancellation queue: ", err)
 			continue
 		}
-		// fmt.Println(queueData)
 		data := strings.Split(string(queueData[1]), ":")
 		orderid, _ := strconv.ParseUint(data[0], 10, 64)
 		stock := ""
@@ -135,7 +130,6 @@ func (engine *OrderEngine) processCancellationRequest(stock string, orderid uint
 		// The order has not reached the order book yet: remember the request so the
 		// incoming order is dropped when it arrives.
 		markCancellationPending(orderid)
-		// fmt.Println("Cancelled Successfully")
 		return "order not reached the orderbook"
 	default:
 		log.Println("Cancel failed: ", result.Error())
@@ -144,10 +138,8 @@ func (engine *OrderEngine) processCancellationRequest(stock string, orderid uint
 }
 
 func (engine *OrderEngine) ProccessQuantityModification() {
-	// fmt.Println("---Starting the Quantity Modification Request Queue---")
 	for {
 		queueData, err := engine.mod_redisClient.BLPop(context.Background(), 0, "PriceModifyQueue").Result()
-		// fmt.Println("Recieved Request")
 		if err != nil {
 			log.Println("Error in processing the price modification queue: ", err)
 			continue

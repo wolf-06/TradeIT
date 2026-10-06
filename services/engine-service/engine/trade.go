@@ -100,7 +100,6 @@ func checkTrade(orderid uint64) bool {
 	}
 	if result.RowsAffected == 0 {
 		status = false
-		// fmt.Println("No trades Found")
 	}
 	tradePool.releaseTrade(temp)
 	return status

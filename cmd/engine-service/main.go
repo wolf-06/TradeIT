@@ -3,7 +3,6 @@ package main
 import (
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
-	//test "TradeIT/internal/testing"
 	"TradeIT/services/engine-service/engine"
 	"fmt"
 	"log"
@@ -32,9 +31,6 @@ func main() {
 
 	// Start processing price modification queue
 	go orderEngine.ProccessQuantityModification()
-
-	// Start test (optional)
-	// go test.Test()
 
 	// Keep the service running
 	select {}

@@ -5,6 +5,17 @@
 
 # Benchmark output
 bench*.txt
+matcher_bench.txt
+/bench
+benchmarks/
+
+# Local-only analysis docs (kept on disk, not part of the cloud repo)
+benchmarking_journey.md
+MICROSERVICES_STRUCTURE.md
+RESTRUCTURE_CHECKLIST.md
+
+# Local tooling
+.kilo/
 
 # Environment files
 .env

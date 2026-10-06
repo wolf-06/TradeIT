@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"os"
 	"sync"
 
@@ -31,11 +30,5 @@ func GetEngineClient(db int) *redis.Client {
 		DB:       db,
 	})
 	clients[db] = client
-	// fmt.Println("successfully created the redis client for db", db)
 	return client
-}
-
-func custom(a, b int) {
-	var mt = make(map[string]string)
-	fmt.Println(mt)
 }
