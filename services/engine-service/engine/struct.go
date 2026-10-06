@@ -2,9 +2,58 @@ package engine
 
 import (
 	"math/bits"
+	"sync"
 
 	"TradeIT/internal/models"
 )
+
+// Order side and type are kept as small enums on the resting node so the matching hot
+// loop does not compare strings. The string form on models.Order stays the wire/DB format.
+const (
+	sideBuy uint8 = iota
+	sideSell
+)
+
+const (
+	typeLimit uint8 = iota
+	typeMarket
+)
+
+func parseSide(s string) (uint8, bool) {
+	switch s {
+	case "buy":
+		return sideBuy, true
+	case "sell":
+		return sideSell, true
+	default:
+		return 0, false
+	}
+}
+
+func parseType(t string) (uint8, bool) {
+	switch t {
+	case "limit":
+		return typeLimit, true
+	case "market":
+		return typeMarket, true
+	default:
+		return 0, false
+	}
+}
+
+// nodePool recycles resting-order nodes. Nodes are created on every insert and dropped on
+// every full fill/cancel, so pooling removes the per-order heap allocation from the hot
+// path. A released node must no longer be referenced by any level or by orderTable.
+var nodePool = sync.Pool{
+	New: func() any { return new(Node) },
+}
+
+func acquireNode() *Node { return nodePool.Get().(*Node) }
+
+func releaseNode(n *Node) {
+	*n = Node{}
+	nodePool.Put(n)
+}
 
 // Node is a resting order inside a price level's FIFO queue. It is referenced from the
 // order book's orderTable by order id, so cancel and modify can reach it in O(1) without
@@ -14,6 +63,8 @@ import (
 // Remq through this node, and cancel/modify read the live Quantity/Remq/Price from it.
 type Node struct {
 	Order_ models.Order
+	side   uint8
+	typ    uint8
 	prev   *Node
 	next   *Node
 }
@@ -26,8 +77,11 @@ type priceLevel struct {
 	size int
 }
 
-func (l *priceLevel) pushBack(o models.Order) *Node {
-	n := &Node{Order_: o}
+func (l *priceLevel) pushBack(o *models.Order, side, typ uint8) *Node {
+	n := acquireNode()
+	n.Order_ = *o
+	n.side = side
+	n.typ = typ
 	if l.tail == nil {
 		l.head = n
 		l.tail = n
