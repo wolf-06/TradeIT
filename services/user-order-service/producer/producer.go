@@ -42,6 +42,13 @@ type OrderItem struct {
 	SymbolID uint32
 }
 
+// SubmittedOrder is the result of submitting one order: its id and the per-symbol ring
+// sequence it was assigned.
+type SubmittedOrder struct {
+	OrderID uint64
+	Seq     uint64
+}
+
 // Producer serialises command submission through a single goroutine that owns the WAL and
 // the ring, and group-commits the WAL.
 type Producer struct {
@@ -196,18 +203,18 @@ func (p *Producer) nextID() uint64 {
 func (p *Producer) SymbolID(name string) (uint32, bool) { return p.table.ID(name) }
 
 // SubmitOrders publishes a batch of new orders. One channel round-trip and one flush
-// serve the whole batch. It returns the order ids (assigning a TSID when an order has
-// none).
-func (p *Producer) SubmitOrders(items []OrderItem) ([]uint64, error) {
+// serve the whole batch. It returns each order's id (assigning a TSID when an order has
+// none) and ring sequence.
+func (p *Producer) SubmitOrders(items []OrderItem) ([]SubmittedOrder, error) {
 	cmds := make([]ipc.Cmd, len(items))
-	ids := make([]uint64, len(items))
+	out := make([]SubmittedOrder, len(items))
 	for i := range items {
 		o := items[i].Order
 		orderID := o.Id
 		if orderID == 0 {
 			orderID = p.nextID()
 		}
-		ids[i] = orderID
+		out[i].OrderID = orderID
 		cmds[i] = ipc.Cmd{
 			RequestID: orderID,
 			OrderID:   orderID,
@@ -221,19 +228,23 @@ func (p *Producer) SubmitOrders(items []OrderItem) ([]uint64, error) {
 			Typ:       typOf(o.Order_Type),
 		}
 	}
-	if _, err := p.submitBatch(cmds); err != nil {
+	seqs, err := p.submitBatch(cmds)
+	if err != nil {
 		return nil, err
 	}
-	return ids, nil
+	for i := range out {
+		out[i].Seq = seqs[i]
+	}
+	return out, nil
 }
 
 // SubmitOrder publishes a single new order and returns its order id.
 func (p *Producer) SubmitOrder(o models.MetaOrder, symbolID uint32) (uint64, error) {
-	ids, err := p.SubmitOrders([]OrderItem{{Order: o, SymbolID: symbolID}})
+	out, err := p.SubmitOrders([]OrderItem{{Order: o, SymbolID: symbolID}})
 	if err != nil {
 		return 0, err
 	}
-	return ids[0], nil
+	return out[0].OrderID, nil
 }
 
 // Cancel publishes an OpCancel for a resting order.
