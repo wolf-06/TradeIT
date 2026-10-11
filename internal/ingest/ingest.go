@@ -166,6 +166,23 @@ func (p *Producer) Sync() error {
 	return nil
 }
 
+// SyncSymbol flushes and fsyncs one symbol's producer WAL. Syncing only the symbols that
+// actually received records avoids fsyncing every symbol on every flush.
+func (p *Producer) SyncSymbol(id uint32) error {
+	if int(id) >= len(p.ch) {
+		return fmt.Errorf("ingest: unknown symbol id %d", id)
+	}
+	return p.ch[id].pwal.Sync()
+}
+
+// FreeFor returns the number of free slots in one symbol's ring.
+func (p *Producer) FreeFor(id uint32) uint64 {
+	if int(id) >= len(p.ch) {
+		return 0
+	}
+	return p.ch[id].ring.Free()
+}
+
 // Close closes all rings and WALs.
 func (p *Producer) Close() error {
 	var first error
