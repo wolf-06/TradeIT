@@ -13,11 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"TradeIT/internal/ipc"
 	"TradeIT/internal/shmring"
+	"TradeIT/internal/snapshot"
 	"TradeIT/internal/symbol"
 	"TradeIT/internal/wal"
 )
@@ -37,14 +40,35 @@ type Restorer interface {
 	Restore(c ipc.Cmd, o ipc.Outcome)
 }
 
+// Snapshotter is an optional Handler capability: it serialises and restores one symbol's
+// state. seq is the per-symbol sequence the snapshot represents.
+type Snapshotter interface {
+	Snapshot(symbolID uint32, seq uint64) ([]byte, error)
+	RestoreSnapshot(symbolID uint32, seq uint64, data []byte) error
+}
+
+// Options configures the consumer's snapshot behaviour. The zero value disables
+// snapshots.
+type Options struct {
+	// SnapshotDir is where snapshot files are written. Empty disables snapshots.
+	SnapshotDir string
+	// SnapshotEveryN triggers a snapshot after N applied commands for a symbol.
+	SnapshotEveryN int
+	// SnapshotEveryMs triggers a snapshot for a symbol after this long.
+	SnapshotEveryMs int
+	// Codec selects the snapshot body compression.
+	Codec snapshot.Codec
+}
+
 type channel struct {
-	id   uint32
-	name string
-	ring *shmring.Ring
-	pwal *wal.Writer // producer command log (producer side)
-	awal *wal.Writer // consumer applied log (consumer side)
-	seq  uint64      // producer: next sequence to assign
-	wm   uint64      // consumer: last applied sequence
+	id       uint32
+	name     string
+	ring     *shmring.Ring
+	pwal     *wal.Writer // producer command log (producer side)
+	pwalPath string
+	awal     *wal.Writer // consumer applied log (consumer side)
+	seq      uint64      // producer: next sequence to assign
+	wm       uint64      // consumer: last applied sequence
 }
 
 func ringPath(dir, name string) string { return filepath.Join(dir, name+".ring") }
@@ -128,7 +152,7 @@ func OpenProducer(dir string, table *symbol.Table, capacity int) (*Producer, err
 			p.Close()
 			return nil, err
 		}
-		p.ch = append(p.ch, &channel{id: uint32(id), name: name, ring: ring, pwal: w, seq: seq})
+		p.ch = append(p.ch, &channel{id: uint32(id), name: name, ring: ring, pwal: w, pwalPath: pp, seq: seq})
 	}
 	return p, nil
 }
@@ -183,6 +207,57 @@ func (p *Producer) FreeFor(id uint32) uint64 {
 	return p.ch[id].ring.Free()
 }
 
+// Replay re-publishes records from each symbol's producer WAL whose sequence is greater
+// than from[id] (or the ring's current head, whichever is larger) into the ring. It is
+// used at startup to re-send orders the consumer has not applied - for example after the
+// ring was lost on a reboot. It blocks briefly if a ring is full while the consumer
+// drains.
+func (p *Producer) Replay(from []uint64) error {
+	for i, ch := range p.ch {
+		var floor uint64
+		if i < len(from) {
+			floor = from[i]
+		}
+		if err := replayChannel(ch, floor); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replayChannel(ch *channel, floor uint64) error {
+	if _, err := os.Stat(ch.pwalPath); os.IsNotExist(err) {
+		return nil
+	}
+	if _, err := wal.Repair(ch.pwalPath); err != nil {
+		return err
+	}
+	start := ch.ring.Head()
+	if floor > start {
+		start = floor
+	}
+	r, err := wal.OpenReader(ch.pwalPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	for {
+		rec, err := r.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if ipc.DecodeCmd(rec).Seq <= start {
+			continue
+		}
+		for !ch.ring.Publish(rec) {
+			time.Sleep(100 * time.Microsecond)
+		}
+	}
+}
+
 // Close closes all rings and WALs.
 func (p *Producer) Close() error {
 	var first error
@@ -207,21 +282,67 @@ type Consumer struct {
 	table   *symbol.Table
 	ch      []*channel
 	handler Handler
+	opts    Options
+	snapper Snapshotter // nil when the handler does not support snapshots
+
+	lastSnapSeq  []uint64
+	lastSnapTime []time.Time
 }
 
-// OpenConsumer opens the rings, repairs and replays each applied WAL into the handler
-// (via Restorer when available), and resumes each symbol's watermark. The ring capacity
-// is defined by the files the producer created.
+// OpenConsumer opens the rings with snapshots disabled. See OpenConsumerWithOptions.
 func OpenConsumer(dir string, table *symbol.Table, h Handler) (*Consumer, error) {
-	c := &Consumer{table: table, handler: h}
+	return OpenConsumerWithOptions(dir, table, h, Options{})
+}
+
+// OpenConsumerWithOptions opens the rings, restores the latest snapshot per symbol (when
+// the handler supports snapshots), repairs and replays the applied WAL tail, and resumes
+// each symbol's watermark. The ring capacity is defined by the files the producer created.
+func OpenConsumerWithOptions(dir string, table *symbol.Table, h Handler, opts Options) (*Consumer, error) {
+	snapper, _ := h.(Snapshotter)
+	if snapper == nil {
+		opts.SnapshotDir = ""
+	}
+	c := &Consumer{
+		table:        table,
+		handler:      h,
+		opts:         opts,
+		snapper:      snapper,
+		lastSnapSeq:  make([]uint64, len(table.Names())),
+		lastSnapTime: make([]time.Time, len(table.Names())),
+	}
+	now := time.Now()
 	for id, name := range table.Names() {
 		ring, err := shmring.Open(ringPath(dir, name))
 		if err != nil {
 			c.Close()
 			return nil, err
 		}
+		// Restore the latest snapshot, then replay only the WAL tail after it.
+		var startSeq uint64
+		if snapper != nil && opts.SnapshotDir != "" {
+			path, hdr, ok, err := snapshot.Latest(opts.SnapshotDir, name)
+			if err != nil {
+				ring.Close()
+				c.Close()
+				return nil, err
+			}
+			if ok {
+				_, payload, err := snapshot.Read(path)
+				if err != nil {
+					ring.Close()
+					c.Close()
+					return nil, err
+				}
+				if err := snapper.RestoreSnapshot(uint32(id), hdr.Seq, payload); err != nil {
+					ring.Close()
+					c.Close()
+					return nil, err
+				}
+				startSeq = hdr.Seq
+			}
+		}
 		ap := awalPath(dir, name)
-		wm, err := replayApplied(ap, h)
+		wm, err := replayApplied(ap, h, startSeq)
 		if err != nil {
 			ring.Close()
 			c.Close()
@@ -234,13 +355,17 @@ func OpenConsumer(dir string, table *symbol.Table, h Handler) (*Consumer, error)
 			return nil, err
 		}
 		c.ch = append(c.ch, &channel{id: uint32(id), name: name, ring: ring, awal: aw, wm: wm})
+		c.lastSnapSeq[id] = startSeq
+		c.lastSnapTime[id] = now
 	}
 	return c, nil
 }
 
-func replayApplied(path string, h Handler) (uint64, error) {
+// replayApplied replays the applied WAL into the handler. Records at or below skipUntil
+// are assumed to be already present in a restored snapshot and are skipped.
+func replayApplied(path string, h Handler, skipUntil uint64) (uint64, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return 0, nil
+		return skipUntil, nil
 	}
 	if _, err := wal.Repair(path); err != nil {
 		return 0, err
@@ -250,7 +375,7 @@ func replayApplied(path string, h Handler) (uint64, error) {
 		return 0, err
 	}
 	defer r.Close()
-	var wm uint64
+	wm := skipUntil
 	rs, canRestore := h.(Restorer)
 	for {
 		p, err := r.Next()
@@ -261,6 +386,9 @@ func replayApplied(path string, h Handler) (uint64, error) {
 			return 0, err
 		}
 		cmd, o := ipc.DecodeApplied(p)
+		if cmd.Seq <= skipUntil {
+			continue // already contained in the restored snapshot
+		}
 		if canRestore {
 			rs.Restore(cmd, o)
 		} else {
@@ -273,7 +401,8 @@ func replayApplied(path string, h Handler) (uint64, error) {
 
 // DrainOnce processes up to max records per symbol. For each record it skips anything
 // at or below the symbol watermark (idempotent replay), applies the rest, appends the
-// applied record, and only after the WAL is synced acknowledges the ring.
+// applied record, and only after the WAL is synced acknowledges the ring. It then
+// snapshots any symbol whose count or time threshold is met.
 func (c *Consumer) DrainOnce(max int) (int, error) {
 	total := 0
 	for i := range c.ch {
@@ -296,16 +425,41 @@ func (c *Consumer) DrainOnce(max int) (int, error) {
 			ch.wm = cmd.Seq
 			n++
 		}
-		if n == 0 {
-			continue
+		if n > 0 {
+			if err := ch.awal.Sync(); err != nil {
+				return total, err
+			}
+			ch.ring.Ack(uint64(n))
+			total += n
 		}
-		if err := ch.awal.Sync(); err != nil {
-			return total, err
-		}
-		ch.ring.Ack(uint64(n))
-		total += n
+		c.maybeSnapshot(i, ch)
 	}
 	return total, nil
+}
+
+// maybeSnapshot writes a snapshot for one symbol when its count or time threshold is met.
+func (c *Consumer) maybeSnapshot(i int, ch *channel) {
+	if c.snapper == nil || c.opts.SnapshotDir == "" || ch.wm == c.lastSnapSeq[i] {
+		return
+	}
+	now := time.Now()
+	countDue := c.opts.SnapshotEveryN > 0 && ch.wm-c.lastSnapSeq[i] >= uint64(c.opts.SnapshotEveryN)
+	timeDue := c.opts.SnapshotEveryMs > 0 && now.Sub(c.lastSnapTime[i]) >= time.Duration(c.opts.SnapshotEveryMs)*time.Millisecond
+	if !countDue && !timeDue {
+		return
+	}
+	data, err := c.snapper.Snapshot(ch.id, ch.wm)
+	if err != nil {
+		log.Println("ingest: snapshot error for", ch.name, ":", err)
+		return
+	}
+	hdr := snapshot.Header{Codec: c.opts.Codec, SymbolID: ch.id, Seq: ch.wm}
+	if _, err := snapshot.Write(c.opts.SnapshotDir, ch.name, hdr, data); err != nil {
+		log.Println("ingest: snapshot write error for", ch.name, ":", err)
+		return
+	}
+	c.lastSnapSeq[i] = ch.wm
+	c.lastSnapTime[i] = now
 }
 
 // Watermarks returns the last applied sequence per symbol (indexed by symbol id).
