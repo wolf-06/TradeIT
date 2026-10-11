@@ -24,6 +24,9 @@ type Config struct {
 
 // Ingest holds the shared-memory ingest settings.
 type Ingest struct {
+	// Enabled selects the shared-memory ring path over the legacy Redis path. Off by
+	// default so nothing changes until it is explicitly turned on.
+	Enabled bool `toml:"enabled"`
 	// Dir is the directory holding the per-symbol ring and WAL files. Both services
 	// must point at the same directory (a shared volume in Docker).
 	Dir string `toml:"dir"`
@@ -73,6 +76,17 @@ func LoadFromEnv() (*Config, error) {
 	path := os.Getenv("TRADEIT_CONFIG")
 	if path == "" {
 		return nil, fmt.Errorf("config: TRADEIT_CONFIG is not set")
+	}
+	return Load(path)
+}
+
+// LoadOptional loads the config file named by TRADEIT_CONFIG, or returns (nil, nil) when
+// the variable is unset. It lets a service fall back to its legacy behaviour when ingest
+// is not configured.
+func LoadOptional() (*Config, error) {
+	path := os.Getenv("TRADEIT_CONFIG")
+	if path == "" {
+		return nil, nil
 	}
 	return Load(path)
 }

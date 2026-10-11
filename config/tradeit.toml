@@ -9,6 +9,10 @@
 symbols = ["AAPL", "GOOG", "TSLA", "MSFT"]
 
 [ingest]
+# Select the shared-memory ring path over the legacy Redis path. Off by default so the
+# Redis path stays in use until this is explicitly turned on.
+enabled = false
+
 # Directory holding the per-symbol ring and WAL files. Both services must point at the
 # same directory (a shared volume when running in Docker).
 dir = "./ipc"
