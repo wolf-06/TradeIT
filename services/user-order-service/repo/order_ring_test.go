@@ -82,3 +82,60 @@ func TestCreateOrderRingUnknownSymbol(t *testing.T) {
 		t.Fatal("expected an error for an unknown symbol")
 	}
 }
+
+// TestCancelReduceModifyRing checks the cancel/reduce/modify helpers publish the right
+// operations and reject an unknown symbol.
+func TestCancelReduceModifyRing(t *testing.T) {
+	dir := t.TempDir()
+	tbl, _ := symbol.New([]string{"AAPL"})
+	p, err := producer.Open(dir, tbl, 1024, 256, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	SetRingProducer(p)
+	defer SetRingProducer(nil)
+
+	res, err := CreateOrderRing(models.MetaOrder{User_id: 1, Order_Type: "limit", Side: "buy", Stock: "AAPL", Price: 100, Quantity: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CancelOrderRing(res.OrderID, "AAPL"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReduceQtyRing(res.OrderID, "AAPL", 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ModifyOrderRing(res.OrderID, "AAPL", 120, 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CancelOrderRing(res.OrderID, "NOPE"); err == nil {
+		t.Fatal("expected an error for an unknown symbol")
+	}
+
+	h := &recHandler{}
+	c, err := ingest.OpenConsumer(dir, tbl, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	n, err := c.DrainOnce(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 {
+		t.Fatalf("drained %d, want 4", n)
+	}
+	want := []ipc.OpType{ipc.OpNew, ipc.OpCancel, ipc.OpReduceQty, ipc.OpModify}
+	for i, w := range want {
+		if h.applied[i].Op != w {
+			t.Fatalf("op[%d] = %v, want %v", i, h.applied[i].Op, w)
+		}
+		if h.applied[i].OrderID != res.OrderID {
+			t.Fatalf("op[%d] order id = %d, want %d", i, h.applied[i].OrderID, res.OrderID)
+		}
+	}
+	if h.applied[3].Price != 120 || h.applied[3].Qty != 4 {
+		t.Fatalf("modify cmd = %+v", h.applied[3])
+	}
+}

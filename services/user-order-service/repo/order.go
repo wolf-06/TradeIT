@@ -41,6 +41,54 @@ func CreateOrderRing(o models.MetaOrder) (producer.SubmittedOrder, error) {
 	return out[0], nil
 }
 
+// symbolID resolves a symbol name to its id for the ring path.
+func symbolID(stock string) (uint32, error) {
+	sid, ok := ringProducer.SymbolID(stock)
+	if !ok {
+		return 0, fmt.Errorf("unknown symbol %q", stock)
+	}
+	return sid, nil
+}
+
+// CancelOrderRing publishes an order cancellation through the ring.
+func CancelOrderRing(orderID uint64, stock string) (producer.SubmittedOrder, error) {
+	sid, err := symbolID(stock)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	seq, err := ringProducer.Cancel(orderID, sid)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	return producer.SubmittedOrder{OrderID: orderID, Seq: seq}, nil
+}
+
+// ReduceQtyRing publishes an in-place quantity reduction (new total quantity).
+func ReduceQtyRing(orderID uint64, stock string, newQty int32) (producer.SubmittedOrder, error) {
+	sid, err := symbolID(stock)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	seq, err := ringProducer.ReduceQty(orderID, sid, newQty)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	return producer.SubmittedOrder{OrderID: orderID, Seq: seq}, nil
+}
+
+// ModifyOrderRing publishes a combined price/quantity change (new total quantity).
+func ModifyOrderRing(orderID uint64, stock string, newPrice int64, newQty int32) (producer.SubmittedOrder, error) {
+	sid, err := symbolID(stock)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	seq, err := ringProducer.Modify(orderID, sid, newPrice, newQty)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	return producer.SubmittedOrder{OrderID: orderID, Seq: seq}, nil
+}
+
 // cancelReplyTimeout is how long we wait for the engine to answer a cancel/modify
 // request. The literal values used before were wrong: `10` meant 10 nanoseconds (redis
 // truncates to 1s) and `0` blocks forever.

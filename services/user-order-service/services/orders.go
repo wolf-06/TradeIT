@@ -24,6 +24,22 @@ type placeOrderRequest struct {
 	Quantity   int     `json:"quantity" binding:"required,gt=0"`
 }
 
+// cancelRequest is the wire form of POST /order/cancel.
+type cancelRequest struct {
+	OrderID uint64 `json:"orderid" binding:"required"`
+	Stock   string `json:"stock" binding:"required"`
+}
+
+// modifyRequest is the wire form of POST /order/modify. A price of 0 (or omitted) is an
+// in-place quantity reduction (keeping time priority); a non-zero price is a combined
+// price/quantity change.
+type modifyRequest struct {
+	OrderID  uint64  `json:"orderid" binding:"required"`
+	Stock    string  `json:"stock" binding:"required"`
+	Price    float64 `json:"price"`
+	Quantity int     `json:"quantity" binding:"required,gt=0"`
+}
+
 type OrderService struct {
 	db *gorm.DB
 	op *OrderPool
@@ -121,7 +137,33 @@ func (os *OrderService) GetOrderByParameterService(c *gin.Context) []byte {
 	return json
 }
 
-func (os *OrderService) CancelOrderService(c *gin.Context) error {
-	order_id, _ := c.Get("orderid")
-	return repo.CancelOrder(os.db, (order_id.(uint64)))
+// CancelOrderService publishes a cancellation. Cancel/modify require the shared-memory
+// ingest path; the legacy Redis control plane is not wired for them.
+func (os *OrderService) CancelOrderService(c *gin.Context) (producer.SubmittedOrder, error) {
+	if !repo.RingEnabled() {
+		return producer.SubmittedOrder{}, errors.New("cancel requires the shared-memory ingest path (ingest.enabled)")
+	}
+	var req cancelRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return producer.SubmittedOrder{}, ErrInvalidRequest
+	}
+	return repo.CancelOrderRing(req.OrderID, req.Stock)
+}
+
+// ModifyOrderService publishes a modification: a non-zero price is a combined
+// price/quantity change, otherwise an in-place quantity reduction.
+func (os *OrderService) ModifyOrderService(c *gin.Context) (producer.SubmittedOrder, error) {
+	if !repo.RingEnabled() {
+		return producer.SubmittedOrder{}, errors.New("modify requires the shared-memory ingest path (ingest.enabled)")
+	}
+	var req modifyRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return producer.SubmittedOrder{}, ErrInvalidRequest
+	}
+	if req.Price <= 0 {
+		return repo.ReduceQtyRing(req.OrderID, req.Stock, int32(req.Quantity))
+	}
+	return repo.ModifyOrderRing(req.OrderID, req.Stock, models.PriceToInt(req.Price), int32(req.Quantity))
 }

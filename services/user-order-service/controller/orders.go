@@ -25,6 +25,8 @@ func (oc *OrderController) InitOrderRoutes(router *gin.Engine) {
 		protected.GET("/", oc.GetAllOrders())
 		protected.POST("/sort", oc.GetOrders())
 		protected.POST("/create", oc.PlaceOrder())
+		protected.POST("/cancel", oc.CancelOrder())
+		protected.POST("/modify", oc.ModifyOrder())
 	}
 }
 
@@ -92,11 +94,37 @@ func (oc *OrderController) PlaceOrder() gin.HandlerFunc {
 
 func (oc *OrderController) CancelOrder() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		err := oc.orderService.CancelOrderService(ctx)
-		if err != nil {
-			ctx.JSON(500, "Unable to Cancel order: "+err.Error())
-		} else {
-			ctx.JSON(201, "Order has been successfully cancelled")
+		res, err := oc.orderService.CancelOrderService(ctx)
+		if ctx.IsAborted() { // service already replied with 400
+			return
 		}
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		// The command is durable in the producer WAL; the outcome is delivered later.
+		ctx.JSON(http.StatusAccepted, gin.H{
+			"status":  "accepted",
+			"orderid": res.OrderID,
+			"seq":     res.Seq,
+		})
+	}
+}
+
+func (oc *OrderController) ModifyOrder() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		res, err := oc.orderService.ModifyOrderService(ctx)
+		if ctx.IsAborted() { // service already replied with 400
+			return
+		}
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		ctx.JSON(http.StatusAccepted, gin.H{
+			"status":  "accepted",
+			"orderid": res.OrderID,
+			"seq":     res.Seq,
+		})
 	}
 }

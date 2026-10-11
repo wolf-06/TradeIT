@@ -44,14 +44,11 @@ func main() {
 		go rc.Run()
 		fmt.Printf("engine: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
 	} else {
+		// Legacy Redis path: orders plus the cancel/modify control queues.
 		go orderEngine.ProcessOrderQueue()
+		go orderEngine.ProcessCancellationQueue()
+		go orderEngine.ProccessQuantityModification()
 	}
-
-	// Start processing cancellation queue
-	go orderEngine.ProcessCancellationQueue()
-
-	// Start processing price modification queue
-	go orderEngine.ProccessQuantityModification()
 
 	// Keep the service running
 	select {}
