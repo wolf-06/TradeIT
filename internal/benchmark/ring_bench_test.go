@@ -1,13 +1,13 @@
 package benchmark
 
 import (
-	"errors"
 	"os"
 	"runtime"
 	"sync"
 	"testing"
 
 	"TradeIT/internal/ingest"
+	"TradeIT/internal/models"
 	"TradeIT/internal/symbol"
 	"TradeIT/services/engine-service/engine"
 	"TradeIT/services/user-order-service/producer"
@@ -15,7 +15,6 @@ import (
 
 // fastDir returns a directory for the ring/WAL files. It prefers /dev/shm (tmpfs) so the
 // group-commit fsync is not the measurement confound; this isolates the ring hot path.
-// Fall back to the test temp dir when tmpfs is unavailable.
 func fastDir(b *testing.B) (string, func()) {
 	b.Helper()
 	if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
@@ -36,16 +35,41 @@ func benchTable(b *testing.B, symbols []string) *symbol.Table {
 	return tbl
 }
 
-// BenchmarkRingEndToEnd measures the full new ingest hot path: the producer builds
-// commands, appends them to the producer WAL and publishes them to the shared-memory ring,
-// while the consumer drains the ring and applies them to a real ledger. Compare with
-// BenchmarkMatcherProductionLike (matcher alone).
+func itemsFor(orders []models.Order, tbl *symbol.Table, from, to int) []producer.OrderItem {
+	items := make([]producer.OrderItem, 0, to-from)
+	for j := from; j < to; j++ {
+		sid, _ := tbl.ID(orders[j].Stock)
+		items = append(items, producer.OrderItem{Order: orders[j].MetaOrder, SymbolID: sid})
+	}
+	return items
+}
+
+func submitAllBatched(p *producer.Producer, tbl *symbol.Table, orders []models.Order, batch int) error {
+	for start := 0; start < len(orders); start += batch {
+		end := start + batch
+		if end > len(orders) {
+			end = len(orders)
+		}
+		if _, err := p.SubmitOrders(itemsFor(orders, tbl, start, end)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BenchmarkRingEndToEnd measures the full new ingest hot path with batched submission: the
+// producer builds command batches, appends them to the producer WAL and publishes them to
+// the shared-memory ring, while the consumer drains the ring and applies them to a real
+// ledger. Compare with BenchmarkMatcherProductionLike (matcher alone).
 //
 //	go test -run '^$' -bench BenchmarkRingEndToEnd -benchtime 1x ./internal/benchmark/
 func BenchmarkRingEndToEnd(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Seed = 42
-	const workloadSize = 100000
+	const (
+		workloadSize = 100000
+		batch        = 512
+	)
 
 	work := NewGenerator(cfg).Generate(workloadSize)
 	tbl := benchTable(b, cfg.Symbols)
@@ -57,7 +81,7 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		dir, cleanup := fastDir(b)
-		p, err := producer.Open(dir, tbl, 1<<18, 1, 5)
+		p, err := producer.Open(dir, tbl, 1<<18, 256, 5)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -76,21 +100,10 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := range work.Orders {
-				o := work.Orders[j]
-				sid, ok := tbl.ID(o.Stock)
-				if !ok {
-					prodErrMu.Lock()
-					prodErr = errors.New("unknown symbol: " + o.Stock)
-					prodErrMu.Unlock()
-					return
-				}
-				if _, err := p.SubmitOrder(o.MetaOrder, sid); err != nil {
-					prodErrMu.Lock()
-					prodErr = err
-					prodErrMu.Unlock()
-					return
-				}
+			if err := submitAllBatched(p, tbl, work.Orders, batch); err != nil {
+				prodErrMu.Lock()
+				prodErr = err
+				prodErrMu.Unlock()
 			}
 		}()
 
@@ -130,8 +143,6 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 // BenchmarkRingConsumerOnly isolates the consumer hot path (ring drain + decode + match +
 // applied-WAL append) from the producer: orders are pre-published outside the timed
 // region, then drained.
-//
-//	go test -run '^$' -bench BenchmarkRingConsumerOnly -benchtime 1x ./internal/benchmark/
 func BenchmarkRingConsumerOnly(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Seed = 42
@@ -147,16 +158,12 @@ func BenchmarkRingConsumerOnly(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		dir, cleanup := fastDir(b)
-		p, err := producer.Open(dir, tbl, 1<<18, 1, 5)
+		p, err := producer.Open(dir, tbl, 1<<18, 256, 5)
 		if err != nil {
 			b.Fatal(err)
 		}
-		for j := range work.Orders {
-			o := work.Orders[j]
-			sid, _ := tbl.ID(o.Stock)
-			if _, err := p.SubmitOrder(o.MetaOrder, sid); err != nil {
-				b.Fatal(err)
-			}
+		if err := submitAllBatched(p, tbl, work.Orders, 512); err != nil {
+			b.Fatal(err)
 		}
 		ld := engine.InitLedger()
 		c, err := ingest.OpenConsumer(dir, tbl, engine.NewRingHandler(ld, tbl))
@@ -187,10 +194,8 @@ func BenchmarkRingConsumerOnly(b *testing.B) {
 	}
 }
 
-// BenchmarkRingProducerOnly isolates the producer hot path (encode + WAL append + ring
-// publish + group-commit fsync).
-//
-//	go test -run '^$' -bench BenchmarkRingProducerOnly -benchtime 1x ./internal/benchmark/
+// BenchmarkRingProducerOnly isolates the producer hot path with batched submission
+// (encode + WAL append + ring publish + group-commit fsync).
 func BenchmarkRingProducerOnly(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Seed = 42
@@ -206,17 +211,13 @@ func BenchmarkRingProducerOnly(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		dir, cleanup := fastDir(b)
-		p, err := producer.Open(dir, tbl, 1<<18, 1, 5)
+		p, err := producer.Open(dir, tbl, 1<<18, 256, 5)
 		if err != nil {
 			b.Fatal(err)
 		}
 		b.StartTimer()
-		for j := range work.Orders {
-			o := work.Orders[j]
-			sid, _ := tbl.ID(o.Stock)
-			if _, err := p.SubmitOrder(o.MetaOrder, sid); err != nil {
-				b.Fatal(err)
-			}
+		if err := submitAllBatched(p, tbl, work.Orders, 512); err != nil {
+			b.Fatal(err)
 		}
 		b.StopTimer()
 		p.Close()
