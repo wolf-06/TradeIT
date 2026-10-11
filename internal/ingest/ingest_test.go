@@ -64,7 +64,7 @@ func TestEndToEndTwoSymbols(t *testing.T) {
 	}
 
 	h := &recHandler{}
-	c, err := OpenConsumer(dir, tbl, 64, h)
+	c, err := OpenConsumer(dir, tbl, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestConsumerRecoveryNoDoubleApply(t *testing.T) {
 	p.Sync()
 
 	h1 := &recHandler{}
-	c1, err := OpenConsumer(dir, tbl, 64, h1)
+	c1, err := OpenConsumer(dir, tbl, h1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestConsumerRecoveryNoDoubleApply(t *testing.T) {
 	// Restart: the applied WAL must be replayed into a fresh handler, then the rest
 	// of the ring drained without re-applying anything.
 	h2 := &recHandler{}
-	c2, err := OpenConsumer(dir, tbl, 64, h2)
+	c2, err := OpenConsumer(dir, tbl, h2)
 	if err != nil {
 		t.Fatal(err)
 	}

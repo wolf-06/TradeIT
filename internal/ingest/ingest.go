@@ -193,8 +193,9 @@ type Consumer struct {
 }
 
 // OpenConsumer opens the rings, repairs and replays each applied WAL into the handler
-// (via Restorer when available), and resumes each symbol's watermark.
-func OpenConsumer(dir string, table *symbol.Table, capacity int, h Handler) (*Consumer, error) {
+// (via Restorer when available), and resumes each symbol's watermark. The ring capacity
+// is defined by the files the producer created.
+func OpenConsumer(dir string, table *symbol.Table, h Handler) (*Consumer, error) {
 	c := &Consumer{table: table, handler: h}
 	for id, name := range table.Names() {
 		ring, err := shmring.Open(ringPath(dir, name))
