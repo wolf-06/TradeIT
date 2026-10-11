@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"time"
 
 	"TradeIT/internal/ipc"
@@ -48,6 +49,35 @@ func (h *RingHandler) Apply(c ipc.Cmd) ipc.Outcome {
 // function of the ordered command stream, so the same apply path reproduces it.
 func (h *RingHandler) Restore(c ipc.Cmd, _ ipc.Outcome) {
 	h.apply(c)
+}
+
+// Snapshot serialises one symbol's book as of seq. It implements ingest.Snapshotter.
+func (h *RingHandler) Snapshot(symbolID uint32, _ uint64) ([]byte, error) {
+	name, ok := h.table.Name(symbolID)
+	if !ok {
+		return nil, fmt.Errorf("engine: unknown symbol id %d", symbolID)
+	}
+	ob := h.ledger.ent[name]
+	if ob == nil {
+		return nil, nil
+	}
+	return ob.Snapshot(), nil
+}
+
+// RestoreSnapshot replaces one symbol's book with a snapshot. It implements
+// ingest.Snapshotter.
+func (h *RingHandler) RestoreSnapshot(symbolID uint32, _ uint64, data []byte) error {
+	name, ok := h.table.Name(symbolID)
+	if !ok {
+		return fmt.Errorf("engine: unknown symbol id %d", symbolID)
+	}
+	ob := h.ledger.ent[name]
+	if ob == nil {
+		ob = InitOrderBook()
+		h.ledger.ent[name] = ob
+		h.ledger.ob_count++
+	}
+	return ob.Restore(name, data)
 }
 
 func (h *RingHandler) apply(c ipc.Cmd) ipc.Outcome {
