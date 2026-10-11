@@ -55,6 +55,10 @@ func InitOrderEngine() *OrderEngine {
 	}
 }
 
+// Ledger returns the engine's order-book ledger. The ring consumer path uses it as the
+// book that commands from the shared-memory ring are applied to.
+func (engine *OrderEngine) Ledger() *Ledger { return engine.ledger }
+
 func (engine *OrderEngine) ProcessOrderQueue() {
 	var order models.Order
 	fmt.Printf("Starting the OrderQueue\n")
