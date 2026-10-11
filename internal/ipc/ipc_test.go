@@ -12,6 +12,7 @@ func TestCmdRoundTrip(t *testing.T) {
 		OrderID:   0x0123456789abcdef,
 		Seq:       1 << 40,
 		Price:     18540,
+		UserID:    -9,
 		Version:   7,
 		SymbolID:  3,
 		Qty:       -5, // exercise signed round-trip

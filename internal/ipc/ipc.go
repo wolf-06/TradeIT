@@ -111,6 +111,7 @@ type Cmd struct {
 	OrderID   uint64
 	Seq       uint64
 	Price     int64
+	UserID    int64
 	Version   uint32
 	SymbolID  uint32
 	Qty       int32
