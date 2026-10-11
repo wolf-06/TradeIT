@@ -1,0 +1,25 @@
+# TradeIT shared configuration.
+#
+# The file location is provided to both services via the TRADEIT_CONFIG environment
+# variable (see .env). The ordered symbol list below is the single source of truth for
+# symbol ids: both the order service and the engine load this file, so name/id encoding
+# and decoding cannot drift.
+
+# Order matters: symbols[i] has id i.
+symbols = ["AAPL", "GOOG", "TSLA", "MSFT"]
+
+[ingest]
+# Directory holding the per-symbol ring and WAL files. Both services must point at the
+# same directory (a shared volume when running in Docker).
+dir = "./ipc"
+
+# Number of slots per symbol ring. Must be a power of two. 2^18 * 64 B = 16 MiB/symbol.
+ring_capacity = 262144
+
+# Maximum records the consumer processes per symbol per drain pass.
+drain_batch = 1024
+
+# Producer group commit: fsync the WAL after N appends or Ms milliseconds, whichever
+# comes first. 0 disables that trigger.
+sync_every_n = 256
+sync_every_ms = 5
