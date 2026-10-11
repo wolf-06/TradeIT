@@ -60,6 +60,24 @@ func (oc *OrderController) GetOrders() gin.HandlerFunc {
 
 func (oc *OrderController) PlaceOrder() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
+		if oc.orderService.RingEnabled() {
+			res, err := oc.orderService.PlaceOrderRing(ctx)
+			if ctx.IsAborted() { // service already replied with 400
+				return
+			}
+			if err != nil {
+				ctx.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+				return
+			}
+			// The command is durable in the producer WAL; the outcome is delivered
+			// later by the notification service.
+			ctx.JSON(http.StatusAccepted, gin.H{
+				"status":  "accepted",
+				"orderid": res.OrderID,
+				"seq":     res.Seq,
+			})
+			return
+		}
 		status := oc.orderService.CreateOrderService(ctx)
 		if ctx.IsAborted() { // service already replied with 400
 			return

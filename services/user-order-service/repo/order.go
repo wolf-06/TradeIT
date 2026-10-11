@@ -2,6 +2,7 @@ package repo
 
 import (
 	"TradeIT/internal/models"
+	"TradeIT/services/user-order-service/producer"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,31 @@ import (
 	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
+
+// ringProducer is the shared-memory ingest producer. When set, order creation goes
+// through the ring instead of the legacy synchronous DB write + Redis push.
+var ringProducer *producer.Producer
+
+// SetRingProducer installs the shared-memory producer and enables the ring ingest path.
+func SetRingProducer(p *producer.Producer) { ringProducer = p }
+
+// RingEnabled reports whether the shared-memory ingest path is active.
+func RingEnabled() bool { return ringProducer != nil }
+
+// CreateOrderRing submits an order through the shared-memory ring and returns its id and
+// per-symbol sequence. The producer WAL is the durability point, so no synchronous DB
+// write happens here; the order row is written later by the projection service.
+func CreateOrderRing(o models.MetaOrder) (producer.SubmittedOrder, error) {
+	sid, ok := ringProducer.SymbolID(o.Stock)
+	if !ok {
+		return producer.SubmittedOrder{}, fmt.Errorf("unknown symbol %q", o.Stock)
+	}
+	out, err := ringProducer.SubmitOrders([]producer.OrderItem{{Order: o, SymbolID: sid}})
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	return out[0], nil
+}
 
 // cancelReplyTimeout is how long we wait for the engine to answer a cancel/modify
 // request. The literal values used before were wrong: `10` meant 10 nanoseconds (redis

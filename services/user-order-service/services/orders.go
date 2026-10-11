@@ -4,6 +4,8 @@ import (
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
 	repo "TradeIT/services/user-order-service/repo"
+	"TradeIT/services/user-order-service/producer"
+	"errors"
 	"net/http"
 	"time"
 
@@ -34,16 +36,22 @@ func InitOrderService() *OrderService {
 	}
 }
 
-func (os *OrderService) CreateOrderService(c *gin.Context) bool {
+// ErrInvalidRequest signals that the request was already rejected (a response has been
+// written) so the caller must not write another.
+var ErrInvalidRequest = errors.New("invalid request")
+
+// parseOrder reads and validates a place-order request. On success it returns a pooled
+// order the caller must release; on failure it has already written a 400 and returns
+// ErrInvalidRequest.
+func (os *OrderService) parseOrder(c *gin.Context) (*models.MetaOrder, error) {
 	var req placeOrderRequest
 	if err := c.BindJSON(&req); err != nil {
 		// NOTE: this used to be log.Fatalln, which killed the whole service on any
 		// malformed payload. Reject the request instead.
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
-		return false
+		return nil, ErrInvalidRequest
 	}
 	order := os.op.acquireOrder()
-	defer os.op.releaseOrder(order)
 	// The order always belongs to the authenticated caller; a user_id supplied in the
 	// body is ignored so nobody can place orders on another account.
 	user_id, _ := c.Get("userid")
@@ -52,13 +60,36 @@ func (os *OrderService) CreateOrderService(c *gin.Context) bool {
 	order.Side = req.Side
 	order.Stock = req.Stock
 	// Convert the decimal wire price into the engine's integer representation. This is
-	// the single conversion point: everything downstream (DB, Redis queue, matcher)
-	// works with scaled integers only.
+	// the single conversion point: everything downstream (DB, queue, matcher) works with
+	// scaled integers only.
 	order.Price = models.PriceToInt(req.Price)
 	order.Quantity = req.Quantity
 	order.Created_at = time.Now()
 	order.Status = "pending"
+	return order, nil
+}
+
+func (os *OrderService) CreateOrderService(c *gin.Context) bool {
+	order, err := os.parseOrder(c)
+	if err != nil {
+		return false
+	}
+	defer os.op.releaseOrder(order)
 	return repo.CreateOrder(os.db, *order)
+}
+
+// RingEnabled reports whether the shared-memory ingest path is active.
+func (os *OrderService) RingEnabled() bool { return repo.RingEnabled() }
+
+// PlaceOrderRing places an order through the shared-memory ring and returns its id and
+// per-symbol sequence.
+func (os *OrderService) PlaceOrderRing(c *gin.Context) (producer.SubmittedOrder, error) {
+	order, err := os.parseOrder(c)
+	if err != nil {
+		return producer.SubmittedOrder{}, err
+	}
+	defer os.op.releaseOrder(order)
+	return repo.CreateOrderRing(*order)
 }
 
 func (os *OrderService) GetAllOrderService(c *gin.Context) []byte {

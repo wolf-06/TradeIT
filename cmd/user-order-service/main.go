@@ -1,9 +1,12 @@
 package main
 
 import (
+	"TradeIT/internal/config"
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
 	"TradeIT/services/user-order-service/controller"
+	"TradeIT/services/user-order-service/producer"
+	"TradeIT/services/user-order-service/repo"
 	"fmt"
 	"log"
 	"os"
@@ -39,6 +42,24 @@ func main() {
 
 	orderController := controller.InitOrderController()
 	orderController.InitOrderRoutes(router)
+
+	// Opt in to the shared-memory ingest path. When enabled, order creation is published
+	// to the ring (durable in the producer WAL) instead of the synchronous DB+Redis path.
+	if cfg, err := config.LoadOptional(); err != nil {
+		log.Fatalln("Error in loading the ingest config: ", err)
+	} else if cfg != nil && cfg.Ingest.Enabled {
+		table, err := cfg.SymbolTable()
+		if err != nil {
+			log.Fatalln("Error building the symbol table: ", err)
+		}
+		p, err := producer.Open(cfg.Ingest.Dir, table, cfg.Ingest.RingCapacity, cfg.Ingest.SyncEveryN, cfg.Ingest.SyncEveryMs)
+		if err != nil {
+			log.Fatalln("Error opening the ring producer: ", err)
+		}
+		defer p.Close()
+		repo.SetRingProducer(p)
+		fmt.Printf("user-order-service: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
+	}
 
 	router.Run(":8000")
 }
