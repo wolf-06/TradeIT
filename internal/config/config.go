@@ -10,6 +10,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -38,6 +39,12 @@ type Ingest struct {
 	// after N appends or Ms milliseconds, whichever comes first.
 	SyncEveryN  int `toml:"sync_every_n"`
 	SyncEveryMs int `toml:"sync_every_ms"`
+	// SnapshotEveryN triggers a book snapshot after N applied commands for a symbol.
+	SnapshotEveryN int `toml:"snapshot_every_n"`
+	// SnapshotEveryMs triggers a book snapshot for a symbol after this long.
+	SnapshotEveryMs int `toml:"snapshot_every_ms"`
+	// SnapshotCodec is the snapshot body compression: "none", "gzip" or "zstd".
+	SnapshotCodec string `toml:"snapshot_codec"`
 }
 
 // Default returns the built-in configuration (used as the base for Load and in tests).
@@ -45,11 +52,14 @@ func Default() *Config {
 	return &Config{
 		Symbols: []string{"AAPL", "GOOG", "TSLA", "MSFT"},
 		Ingest: Ingest{
-			Dir:          "./ipc",
-			RingCapacity: 1 << 18,
-			DrainBatch:   1024,
-			SyncEveryN:   256,
-			SyncEveryMs:  5,
+			Dir:             "./ipc",
+			RingCapacity:    1 << 18,
+			DrainBatch:      1024,
+			SyncEveryN:      256,
+			SyncEveryMs:     5,
+			SnapshotEveryN:  100000,
+			SnapshotEveryMs: 30000,
+			SnapshotCodec:   "zstd",
 		},
 	}
 }
@@ -113,3 +123,6 @@ func (c *Config) Validate() error {
 
 // SymbolTable builds the shared symbol table from the configured order.
 func (c *Config) SymbolTable() (*symbol.Table, error) { return symbol.New(c.Symbols) }
+
+// ControlPath returns the shared watermark region path (inside the ingest directory).
+func (c *Config) ControlPath() string { return filepath.Join(c.Ingest.Dir, "control") }

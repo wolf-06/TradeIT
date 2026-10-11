@@ -27,3 +27,11 @@ drain_batch = 1024
 # comes first. 0 disables that trigger.
 sync_every_n = 256
 sync_every_ms = 5
+
+# Book snapshots: write a full snapshot of a symbol's book after N applied commands or
+# Ms milliseconds, whichever comes first. Snapshots bound recovery time after a restart.
+snapshot_every_n = 100000
+snapshot_every_ms = 30000
+
+# Snapshot body compression: "none", "gzip" or "zstd".
+snapshot_codec = "zstd"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"TradeIT/internal/config"
+	"TradeIT/internal/control"
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
 	"TradeIT/services/user-order-service/controller"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -57,9 +59,49 @@ func main() {
 			log.Fatalln("Error opening the ring producer: ", err)
 		}
 		defer p.Close()
+
+		// Re-send orders the consumer has not applied. The consumer publishes its
+		// watermark to the shared control region; wait for it (1s, 2s, 3s) then fall
+		// back to replaying from the oldest record.
+		region, err := control.OpenOrCreate(cfg.ControlPath(), len(cfg.Symbols))
+		if err != nil {
+			log.Fatalln("Error opening the control region: ", err)
+		}
+		defer region.Close()
+		if err := p.Replay(readWatermarks(region, len(cfg.Symbols))); err != nil {
+			log.Fatalln("Error replaying orders: ", err)
+		}
+
 		repo.SetRingProducer(p)
 		fmt.Printf("user-order-service: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
 	}
 
 	router.Run(":8000")
+}
+
+// readWatermarks waits for the consumer to publish its per-symbol watermark, retrying at
+// 1s, 2s and 3s. If none appears it returns the current values (zero), which makes the
+// producer replay from the oldest record and rely on the consumer's dedup.
+func readWatermarks(region *control.Region, symbols int) []uint64 {
+	for _, d := range []time.Duration{time.Second, 2 * time.Second, 3 * time.Second} {
+		if wm, ready := snapshotWatermarks(region, symbols); ready {
+			return wm
+		}
+		fmt.Printf("user-order-service: waiting %s for the consumer watermark\n", d)
+		time.Sleep(d)
+	}
+	wm, _ := snapshotWatermarks(region, symbols)
+	return wm
+}
+
+func snapshotWatermarks(region *control.Region, symbols int) ([]uint64, bool) {
+	wm := make([]uint64, symbols)
+	ready := false
+	for i := range wm {
+		wm[i] = region.Watermark(uint32(i))
+		if wm[i] > 0 {
+			ready = true
+		}
+	}
+	return wm, ready
 }

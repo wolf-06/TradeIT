@@ -32,8 +32,9 @@ type resp struct {
 }
 
 type req struct {
-	cmds []ipc.Cmd
-	resp chan resp
+	cmds   []ipc.Cmd
+	replay []uint64 // non-nil => replay request
+	resp   chan resp
 }
 
 // OrderItem is one order to submit in a batch.
@@ -162,6 +163,12 @@ func (p *Producer) loop() {
 	for {
 		select {
 		case r := <-p.cmds:
+			if r.replay != nil {
+				// Replay runs on this goroutine so the ring keeps its single writer.
+				flush()
+				r.resp <- resp{err: p.ring.Replay(r.replay)}
+				continue
+			}
 			pending = append(pending, r)
 			count += len(r.cmds)
 			if p.syncEveryN > 0 && count >= p.syncEveryN {
@@ -201,6 +208,19 @@ func (p *Producer) nextID() uint64 {
 
 // SymbolID resolves a symbol name to its id, or reports it is unknown.
 func (p *Producer) SymbolID(name string) (uint32, bool) { return p.table.ID(name) }
+
+// Replay re-publishes orders from the producer WAL that the consumer has not applied
+// (sequence greater than from[id]) into the ring. It runs on the commit goroutine so the
+// ring keeps its single-writer invariant.
+func (p *Producer) Replay(from []uint64) error {
+	respCh := make(chan resp, 1)
+	select {
+	case p.cmds <- req{replay: from, resp: respCh}:
+	case <-p.stop:
+		return ErrClosed
+	}
+	return (<-respCh).err
+}
 
 // SubmitOrders publishes a batch of new orders. One channel round-trip and one flush
 // serve the whole batch. It returns each order's id (assigning a TSID when an order has

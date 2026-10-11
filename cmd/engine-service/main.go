@@ -2,6 +2,7 @@ package main
 
 import (
 	"TradeIT/internal/config"
+	"TradeIT/internal/control"
 	"TradeIT/internal/database"
 	"TradeIT/internal/models"
 	"TradeIT/services/engine-service/engine"
@@ -31,7 +32,12 @@ func main() {
 		log.Fatalln("Error in loading the ingest config: ", err)
 	}
 	if cfg != nil && cfg.Ingest.Enabled {
-		rc, err := engine.OpenRingConsumer(cfg, orderEngine.Ledger())
+		region, err := control.OpenOrCreate(cfg.ControlPath(), len(cfg.Symbols))
+		if err != nil {
+			log.Fatalln("Error opening the control region: ", err)
+		}
+		defer region.Close()
+		rc, err := engine.OpenRingConsumer(cfg, orderEngine.Ledger(), region)
 		if err != nil {
 			log.Fatalln("Error in opening the ring consumer: ", err)
 		}
