@@ -398,6 +398,43 @@ func (ob *Orderbook) ModifyPrice(orderId uint64, newPrice int64) error {
 	return ob.matchLocked(order)
 }
 
+// Modify re-prices and re-quantifies a resting order and re-matches it at the new price.
+// newQuantity is the new total quantity and must not be below the already filled amount.
+// It returns ORDER_ALREADY_PROCESSED when the order is not resting, so a modify of an
+// executed order is rejected rather than resurrected.
+func (ob *Orderbook) Modify(orderId uint64, newPrice int64, newQuantity int) error {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	node, exists := ob.orderTable[orderId]
+	if !exists {
+		return errors.New("ORDER_ALREADY_PROCESSED")
+	}
+	if newPrice <= 0 {
+		return errors.New("ORDER_INVALID_PRICE")
+	}
+	if newQuantity <= 0 {
+		return errors.New("ORDER_INVALID_QUANTITY")
+	}
+	filled := node.Order_.Quantity - node.Order_.Remq
+	if newQuantity < filled {
+		return errors.New("ORDER_PARTIAL_DECREASE_DENIED")
+	}
+	ob.removeNode(node)
+	if node.Order_.Side == "buy" {
+		ob.buyCount--
+	} else {
+		ob.sellCount--
+	}
+	delete(ob.orderTable, orderId)
+	order := node.Order_
+	order.Price = newPrice
+	order.Quantity = newQuantity
+	order.Remq = newQuantity - filled
+	releaseNode(node)
+	return ob.matchLocked(order)
+}
+
 func (ob *Orderbook) DisplayResult() {
 	fmt.Printf("Trades: %d |\nBuyOrders: %d|\nSellOrders: %d|\nTotal: %d", ob.tradeCount, ob.buyCount, ob.sellCount, (ob.tradeCount + ob.sellCount + ob.buyCount))
 	fmt.Printf("\nPrice levels: \n bids: %d\nasks: %d", ob.bids.levelCount(), ob.asks.levelCount())

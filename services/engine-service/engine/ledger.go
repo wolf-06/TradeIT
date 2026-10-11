@@ -46,3 +46,22 @@ func (ld *Ledger) ModifyPrice(stock string, order_id uint64, newPrice int64) err
 	}
 	return ob.ModifyPrice(order_id, newPrice)
 }
+
+// ModifyQuantity changes the total quantity of a resting order in place (keeping its
+// time priority).
+func (ld *Ledger) ModifyQuantity(stock string, order_id uint64, newQuantity int) error {
+	ob, exists := ld.ent[stock]
+	if !exists {
+		return errors.New("INVALID STOCK")
+	}
+	return ob.ModifyQuantity(order_id, newQuantity)
+}
+
+// Modify re-prices and re-quantifies a resting order and re-matches it.
+func (ld *Ledger) Modify(stock string, order_id uint64, newPrice int64, newQuantity int) error {
+	ob, exists := ld.ent[stock]
+	if !exists {
+		return errors.New("INVALID STOCK")
+	}
+	return ob.Modify(order_id, newPrice, newQuantity)
+}
