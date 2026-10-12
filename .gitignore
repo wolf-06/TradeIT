@@ -11,7 +11,7 @@ bench*.txt
 matcher_bench.txt
 load*.txt
 /bench
-benchmarks/
+/benchmarks/
 
 # Local-only analysis docs (kept on disk, not part of the cloud repo)
 benchmarking_journey.md

@@ -42,6 +42,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 RAW="$TMP/all-bench.txt"
 : >"$RAW"
+FAILED=0
 
 mkdir -p "$(dirname "$OUT")"
 : >"$OUT"
@@ -53,13 +54,21 @@ note(){ printf '%s\n' "$*" >>"$OUT"; }
 fence(){ printf '```\n' >>"$OUT"; }
 
 # run a benchmark command: capture combined output to the report (fenced) and to RAW.
+# A non-zero exit is recorded and reported at the end rather than swallowed.
 run() {
   local title="$1"; shift
   h "$title"
   fence
   printf '$ %s\n' "$*" >>"$OUT"
-  { "$@" 2>&1 || true; } | tee -a "$OUT" "$RAW" >/dev/null
+  local rc=0
+  "$@" >"$TMP/run.out" 2>&1 || rc=$?
+  tee -a "$OUT" "$RAW" <"$TMP/run.out" >/dev/null
   fence
+  if [ "$rc" -ne 0 ]; then
+    note "_Command exited with status $rc._"
+    say "WARNING: '$title' exited with status $rc"
+    FAILED=1
+  fi
 }
 
 # metric_filter prints the headline metric names to scrape for a service. Every service
@@ -193,6 +202,37 @@ fi
 
 # --- 6. combined results ---------------------------------------------------------------
 
+h "Medians (per benchmark, across the -count runs)"
+note "Median ns/op for every benchmark, and median orders/sec where the benchmark reports it."
+fence
+{
+awk '/^Benchmark/ { name=$1; sub(/-[0-9]+$/, "", name); print name, $3 }' "$RAW" \
+  | sort -k1,1 -k2,2n \
+  | awk '
+    function flush() {
+      if (n == 0) return
+      med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+      printf "%-38s %12.2f ns/op   (n=%d)\n", cur, med, n
+    }
+    $1 != cur { flush(); cur = $1; n = 0 }
+    { v[++n] = $2 }
+    END { flush() }
+  '
+awk '/orders\/sec/ { name=$1; sub(/-[0-9]+$/, "", name); for (i=1;i<=NF;i++) if ($i=="orders/sec") print name, $(i-1) }' "$RAW" \
+  | sort -k1,1 -k2,2n \
+  | awk '
+    function flush() {
+      if (n == 0) return
+      med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+      printf "%-38s %12.0f orders/sec   (n=%d)\n", cur, med, n
+    }
+    $1 != cur { flush(); cur = $1; n = 0 }
+    { v[++n] = $2 }
+    END { flush() }
+  '
+} >>"$OUT"
+fence
+
 h "Combined benchmark result lines"
 fence
 grep -E '^(Benchmark|PASS|FAIL|ok )' "$RAW" >>"$OUT" 2>/dev/null || true
@@ -210,4 +250,8 @@ cat >>"$OUT" <<'EOF'
 EOF
 
 say "report written to $OUT"
+if [ "$FAILED" -ne 0 ]; then
+  say "one or more benchmark commands failed; see the report"
+  exit 1
+fi
 printf '\n'

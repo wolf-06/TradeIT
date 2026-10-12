@@ -41,6 +41,7 @@ func main() {
 	email := flag.String("email", "", "account email (default a unique loadgen address)")
 	password := flag.String("password", "secret123", "account password")
 	verify := flag.Int("verify", 200, "how many placed orders to read back via GET /order/:id")
+	verifyAll := flag.Bool("verify-all", false, "read back every accepted order (overrides -verify)")
 	verifyTimeout := flag.Duration("verify-timeout", 30*time.Second, "how long to wait for read-back")
 	flag.Parse()
 
@@ -115,10 +116,15 @@ func main() {
 		percentile(ok, 95).Round(time.Microsecond),
 		percentile(ok, 99).Round(time.Microsecond))
 
-	if *verify <= 0 {
+	// A recovery or smoke check must not pass when requests were rejected.
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "loadgen: %d of %d requests failed\n", failed, *n)
+		os.Exit(1)
+	}
+	if *verify <= 0 && !*verifyAll {
 		return
 	}
-	found, want := verifyOrders(client, *base, token, ids, *verify, *verifyTimeout)
+	found, want := verifyOrders(client, *base, token, ids, *verify, *verifyAll, *c, *verifyTimeout)
 	if found < want {
 		fmt.Fprintf(os.Stderr, "verify: only %d/%d orders were queryable within %s\n", found, want, *verifyTimeout)
 		os.Exit(1)
@@ -146,40 +152,64 @@ func auth(client *http.Client, base, email, password string) (string, error) {
 	return out.Token, nil
 }
 
-// verifyOrders polls a sample of the placed ids until all are visible or the timeout
+// verifyOrders reads accepted orders back through GET /order/:id. By default it samples
+// the first `want` accepted ids; with all=true it verifies every accepted id. Each round
+// checks the ids concurrently and it repeats until they are all visible or the timeout
 // elapses, returning how many were found.
-func verifyOrders(client *http.Client, base, token string, ids []uint64, want int, timeout time.Duration) (int, int) {
-	sample := make([]uint64, 0, want)
+func verifyOrders(client *http.Client, base, token string, ids []uint64, want int, all bool, concurrency int, timeout time.Duration) (int, int) {
+	sample := make([]uint64, 0, len(ids))
 	for _, id := range ids {
 		if id == 0 {
 			continue
 		}
 		sample = append(sample, id)
-		if len(sample) >= want {
+		if !all && len(sample) >= want {
 			break
 		}
 	}
-	if len(sample) == 0 {
+	total := len(sample)
+	if total == 0 {
 		return 0, 0
 	}
 	deadline := time.Now().Add(timeout)
 	start := time.Now()
 	found := 0
 	for {
-		found = 0
-		for _, id := range sample {
-			if statusOK(client, base, token, id) {
-				found++
-			}
-		}
-		if found == len(sample) || time.Now().After(deadline) {
+		found = countVisible(client, base, token, sample, concurrency)
+		if found == total || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	fmt.Printf("verify: %d/%d orders visible via GET /order/:id after %s\n",
-		found, len(sample), time.Since(start).Round(time.Millisecond))
-	return found, len(sample)
+		found, total, time.Since(start).Round(time.Millisecond))
+	return found, total
+}
+
+// countVisible checks every id once, in parallel, and returns how many were reachable.
+func countVisible(client *http.Client, base, token string, ids []uint64, concurrency int) int {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	var found, next int64
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1)) - 1
+				if i >= len(ids) {
+					return
+				}
+				if statusOK(client, base, token, ids[i]) {
+					atomic.AddInt64(&found, 1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return int(found)
 }
 
 func statusOK(client *http.Client, base, token string, id uint64) bool {
