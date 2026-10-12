@@ -1,22 +1,41 @@
-# `version:` is obsolete in Compose v2+ (it is ignored and only emits a warning), so it is omitted.
+# TradeIT demo stack.
+#
+#   docker compose up -d --build                       # db + redis + the three services
+#   docker compose --profile observability up -d       # + Prometheus and Grafana
+#   docker compose --profile bench run --rm loadgen    # drive load and verify read-back
+#
+# All three services share the ingest volume (ipc_data) where the per-symbol rings and
+# WALs live, and mount config/ read-only for the shared symbol table and ingest knobs.
+# The db/redis host ports are overridable (TRADEIT_DB_PORT / TRADEIT_REDIS_PORT) so the
+# stack can run next to an existing Postgres or Redis; the services always reach them as
+# db:5432 and redis:6379 on the compose network regardless.
+
+name: tradeit
+
+# Environment shared by the three application services.
+x-app-env: &app-env
+  TRADEIT_CONFIG: /app/config/tradeit.toml
+  redis_addr: redis:6379
+  redis_password: ""
+  db_host: db
+  db_port: "5432"
+  db_user: postgres
+  db_passwd: dev123
+  db_name: tradeit
+
 services:
   db:
     container_name: tradeit_db
-    # Pinned: "postgres" (latest) now resolves to 18.x, which changed the data
-    # directory layout (PGDATA=/var/lib/postgresql/18/docker). Never use a floating
-    # tag for a database image, or a fresh image pull can break an existing volume.
+    # Pinned: a floating tag can change the data-directory layout under an existing
+    # volume. Postgres 18+ mounts at /var/lib/postgresql (the parent), not .../data.
     image: postgres:18-alpine
-    # No "user:" override on purpose: the entrypoint must start as root so it can
-    # chown/chmod PGDATA and /var/run/postgresql, then it drops to the postgres user.
     ports:
-      - "5432:5432"
+      - "${TRADEIT_DB_PORT:-5432}:5432"
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=dev123
       - POSTGRES_DB=tradeit
     volumes:
-      # Postgres 18+ requires the mount at /var/lib/postgresql (the parent), NOT
-      # /var/lib/postgresql/data.
       - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d tradeit"]
@@ -28,11 +47,11 @@ services:
     container_name: tradeit_redis
     image: redis:7-alpine
     ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+      - "${TRADEIT_REDIS_PORT:-6379}:6379"
     # Order-status cache entries are short-lived; evict them under memory pressure.
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -40,24 +59,17 @@ services:
       retries: 20
 
   user-order-service:
+    container_name: tradeit_user_order_service
     build:
       context: .
       dockerfile: services/user-order-service/Dockerfile
-    container_name: tradeit_user_order_service
+    image: tradeit/user-order-service:local
     ports:
-      - "8000:8000"
+      - "${TRADEIT_USER_ORDER_PORT:-8000}:8000"
     environment:
-      - jwtkey=${JWTKEY:-dev-secret-change-me}
-      - redis_addr=redis:6379
-      - redis_password=
-      - db_host=db
-      - db_port=5432
-      - db_user=postgres
-      - db_passwd=dev123
-      - db_name=tradeit
-      - TRADEIT_CONFIG=/app/config/tradeit.toml
+      <<: *app-env
+      jwtkey: ${JWTKEY:-dev-secret-change-me}
     volumes:
-      # Shared ingest directory: the per-symbol ring and WAL files live here.
       - ipc_data:/app/ipc
       - ./config:/app/config:ro
     depends_on:
@@ -70,23 +82,17 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+      start_period: 15s
 
   engine-service:
+    container_name: tradeit_engine_service
     build:
       context: .
       dockerfile: services/engine-service/Dockerfile
-    container_name: tradeit_engine_service
+    image: tradeit/engine-service:local
     ports:
-      - "8001:8001"
-    environment:
-      - redis_addr=redis:6379
-      - redis_password=
-      - db_host=db
-      - db_port=5432
-      - db_user=postgres
-      - db_passwd=dev123
-      - db_name=tradeit
-      - TRADEIT_CONFIG=/app/config/tradeit.toml
+      - "${TRADEIT_ENGINE_PORT:-8001}:8001"
+    environment: *app-env
     volumes:
       - ipc_data:/app/ipc
       - ./config:/app/config:ro
@@ -101,23 +107,17 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+      start_period: 15s
 
   projection-service:
+    container_name: tradeit_projection_service
     build:
       context: .
       dockerfile: services/projection-service/Dockerfile
-    container_name: tradeit_projection_service
+    image: tradeit/projection-service:local
     ports:
-      - "8002:8002"
-    environment:
-      - redis_addr=redis:6379
-      - redis_password=
-      - db_host=db
-      - db_port=5432
-      - db_user=postgres
-      - db_passwd=dev123
-      - db_name=tradeit
-      - TRADEIT_CONFIG=/app/config/tradeit.toml
+      - "${TRADEIT_PROJECTION_PORT:-8002}:8002"
+    environment: *app-env
     volumes:
       - ipc_data:/app/ipc
       - ./config:/app/config:ro
@@ -134,14 +134,30 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+      start_period: 15s
 
-  # Observability stack. Start with:  docker compose --profile observability up -d
+  # Load generator for end-to-end benchmarking and read-back verification.
+  #   docker compose --profile bench run --rm loadgen
+  # Override the workload with e.g. `... run --rm loadgen -n 100000 -c 128`.
+  loadgen:
+    profiles: ["bench"]
+    container_name: tradeit_loadgen
+    build:
+      context: .
+      dockerfile: services/loadgen/Dockerfile
+    image: tradeit/loadgen:local
+    command: ["-base", "http://user-order-service:8000", "-n", "20000", "-c", "64", "-verify", "200"]
+    depends_on:
+      user-order-service:
+        condition: service_healthy
+
+  # Observability stack:  docker compose --profile observability up -d
   prometheus:
     profiles: ["observability"]
-    image: prom/prometheus:v2.54.1
     container_name: tradeit_prometheus
+    image: prom/prometheus:v2.54.1
     ports:
-      - "9090:9090"
+      - "${TRADEIT_PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -152,10 +168,10 @@ services:
 
   grafana:
     profiles: ["observability"]
-    image: grafana/grafana:11.2.0
     container_name: tradeit_grafana
+    image: grafana/grafana:11.2.0
     ports:
-      - "3000:3000"
+      - "${TRADEIT_GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -170,13 +186,10 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  # The shared-memory ingest files. For maximum throughput on the demo host, replace this
-  # named volume with a tmpfs bind mount, e.g. `- /dev/shm/tradeit:/app/ipc` on all three
-  # services (the ring is mmap'd, so a RAM-backed directory keeps it at memory speed).
+  # Shared-memory ingest files (rings, WALs, snapshots, control regions). For maximum
+  # throughput, replace this named volume with a RAM-backed bind mount on all three
+  # services, e.g. `- /dev/shm/tradeit:/app/ipc` (the ring is mmap'd, so a tmpfs keeps it
+  # at memory speed).
   ipc_data:
   prometheus_data:
   grafana_data:
-
-networks:
-  tradeit_network:
-    driver: bridge
