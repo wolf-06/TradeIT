@@ -168,14 +168,14 @@ func (p *Producer) Publish(c ipc.Cmd) (uint64, error) {
 		return 0, ErrRingFull
 	}
 	c.Seq = ch.seq
-	var buf [ipc.CmdSize]byte
-	c.Encode(buf[:])
-	if err := ch.pwal.Append(buf[:]); err != nil {
+	// Encode straight into the ring slot so no per-record stack buffer has to escape
+	// into the WAL append.
+	slot := ch.ring.WriteSlot(ch.ring.Head())
+	c.Encode(slot)
+	if err := ch.pwal.Append(slot); err != nil {
 		return 0, err
 	}
-	if !ch.ring.Publish(buf[:]) {
-		return 0, ErrRingFull
-	}
+	ch.ring.Commit(1)
 	ch.seq++
 	return c.Seq, nil
 }
@@ -285,6 +285,7 @@ type Consumer struct {
 	opts    Options
 	snapper Snapshotter // nil when the handler does not support snapshots
 
+	appliedBuf   []byte
 	lastSnapSeq  []uint64
 	lastSnapTime []time.Time
 }
@@ -307,6 +308,7 @@ func OpenConsumerWithOptions(dir string, table *symbol.Table, h Handler, opts Op
 		handler:      h,
 		opts:         opts,
 		snapper:      snapper,
+		appliedBuf:   make([]byte, ipc.AppliedSize),
 		lastSnapSeq:  make([]uint64, len(table.Names())),
 		lastSnapTime: make([]time.Time, len(table.Names())),
 	}
@@ -417,9 +419,8 @@ func (c *Consumer) DrainOnce(max int) (int, error) {
 				continue
 			}
 			o := c.handler.Apply(cmd)
-			var ab [ipc.AppliedSize]byte
-			ipc.EncodeApplied(ab[:], cmd, o)
-			if err := ch.awal.Append(ab[:]); err != nil {
+			ipc.EncodeApplied(c.appliedBuf, cmd, o)
+			if err := ch.awal.Append(c.appliedBuf); err != nil {
 				return total, err
 			}
 			ch.wm = cmd.Seq

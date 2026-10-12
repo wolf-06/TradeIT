@@ -35,8 +35,9 @@ var ErrTornTail = errors.New("wal: torn or corrupt record tail")
 
 // Writer appends framed records to a log file. It is not safe for concurrent use.
 type Writer struct {
-	f  *os.File
-	bw *bufio.Writer
+	f   *os.File
+	bw  *bufio.Writer
+	hdr [headerLen]byte
 }
 
 // CreateWriter creates (or truncates) path for writing.
@@ -62,10 +63,9 @@ func (w *Writer) Append(payload []byte) error {
 	if len(payload) > maxRecord {
 		return fmt.Errorf("wal: record too large (%d bytes)", len(payload))
 	}
-	var hdr [headerLen]byte
-	binary.LittleEndian.PutUint32(hdr[0:], uint32(len(payload)))
-	binary.LittleEndian.PutUint32(hdr[4:], crc32.Checksum(payload, crcTable))
-	if _, err := w.bw.Write(hdr[:]); err != nil {
+	binary.LittleEndian.PutUint32(w.hdr[0:], uint32(len(payload)))
+	binary.LittleEndian.PutUint32(w.hdr[4:], crc32.Checksum(payload, crcTable))
+	if _, err := w.bw.Write(w.hdr[:]); err != nil {
 		return err
 	}
 	if _, err := w.bw.Write(payload); err != nil {
