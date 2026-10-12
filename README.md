@@ -1,12 +1,19 @@
-# TradeIT
+# TradeIT - High-throughput order matching engine in Go
+
+| Result | |
+|---|---|
+| Matcher | 4.36M orders/sec |
+| Journaled ingest-to-match pipeline | 2.58M orders/sec |
+| HTTP API | 19,938 orders/sec at p99 9.7 ms |
+| Recovery | snapshot + log replay, no accepted order lost |
+
+Full numbers, the method, and the improvements behind them: [BENCHMARK.md](BENCHMARK.md).
 
 TradeIT is a trading engine built as three Go services. A user-order service accepts orders
 over HTTP and publishes them to a shared-memory ring. An engine service consumes the ring
 and matches orders on an in-memory order book. A projection service turns the engine's
-durable event log into PostgreSQL rows and a Redis cache that brokers read back.
-
-The matching engine sustains 4.4M orders per second, and the full ring pipeline (durable
-write, ring handoff, match, and event log) sustains 2.6M orders per second end to end.
+durable event log into a durable read model in PostgreSQL plus a Redis cache that brokers
+read back.
 
 ## Run it locally
 
@@ -18,18 +25,19 @@ docker compose up -d --build    # db, redis, and the three services
 docker compose ps               # wait until all five show healthy
 ```
 
-Place orders and read them back through the full pipeline:
+Place orders and read them back through the full pipeline. The load generator is a Go tool,
+so run it either with Go on the host or inside the compose network:
 
 ```bash
+# with Go on the host
 go run ./cmd/loadgen -n 20000 -c 64 -verify 200
-```
 
-The load generator registers a user, sends orders, and verifies that they become queryable
-through `GET /order/:id`. To run it inside the compose network instead:
-
-```bash
+# or inside the compose network, no host Go needed
 docker compose --profile bench run --rm loadgen
 ```
+
+Either way it registers a user, sends orders, and verifies that they become queryable through
+`GET /order/:id`.
 
 Add dashboards:
 
@@ -68,7 +76,7 @@ Client --HTTP--> user-order-service :8000
         +------------+------------+
         v                         v
    PostgreSQL                 Redis cache
-   (source of truth)          (order status)
+   (durable read model)       (order status)
 ```
 
 How it works:
@@ -80,7 +88,8 @@ How it works:
   applied command and trade to a durable event log. The order book is an integer-priced
   ladder, so price lookup is an array index and the best price is a short bitmap scan.
 - The projection service tails the event log and writes orders and trades to PostgreSQL and
-  the Redis status cache. The database is the source of truth and the cache is best effort.
+  the Redis status cache. PostgreSQL is the durable read model and the cache is best effort.
+  The durable event log, not the database, is the source of truth.
 - Brokers poll `GET /order/:id` for status. Reads check the cache first and fall back to the
   database.
 
@@ -150,15 +159,14 @@ and Grafana run under the `observability` profile with a provisioned dashboard.
 
 ## Benchmarking
 
-`scripts/bench.sh` collects the environment, the in-process hot path, the component
-micro-benchmarks, and, when the stack is up, the end-to-end load test, pipeline metrics, and
-database counts into one markdown report.
+`scripts/bench.sh` needs Go on the host. It runs the in-process benchmarks anywhere, and adds
+the end-to-end load test, pipeline metrics, and database counts when a stack is up.
 
 ```bash
-scripts/bench.sh                 # -> benchmarks/bench-<timestamp>.md
-RECOVERY=yes scripts/bench.sh    # also run the recovery demo
-E2E=no scripts/bench.sh          # in-process only, no stack needed
-PROFILE=yes scripts/bench.sh     # also capture CPU and allocation profiles
+scripts/bench.sh                       # in-process; adds E2E when a stack is up
+E2E=yes RECOVERY=yes scripts/bench.sh  # force the full run (stack must be up)
+E2E=no scripts/bench.sh                # in-process only
+PROFILE=yes scripts/bench.sh           # also capture CPU and allocation profiles
 ```
 
 Results and the improvements behind them are in [BENCHMARK.md](BENCHMARK.md).

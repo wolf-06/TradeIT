@@ -8,9 +8,13 @@ under load, how the numbers were measured, and the improvements behind them.
 | Metric | Result |
 |---|---|
 | Matching engine | 4.4M orders per second |
-| Full ring pipeline (durable write, ring handoff, match, event log) | 2.6M orders per second |
+| Journaled ingest-to-match pipeline | 2.6M orders per second |
 | HTTP API, same host | 19,938 orders per second at 6.4 ms median latency |
-| Recovery | Zero order loss through an engine kill and restart under load |
+| Recovery | No accepted order lost through an engine kill and restart under load |
+
+The ingest-to-match pipeline runs in process with the write-ahead log on tmpfs. It covers
+encoding, WAL append, ring handoff, match, and event-log append, and it excludes HTTP and
+PostgreSQL. See the measurement notes for why.
 
 ## The problem it solves
 
@@ -75,11 +79,11 @@ Measured on AWS EC2 `c7i.2xlarge` (Intel Xeon Platinum 8488C, 8 threads, Go 1.23
 | Matcher alone | 4.4M orders per second | pure in-memory matching |
 | Ring producer | 3.5M orders per second | encode, WAL append, ring publish, group commit |
 | Ring consumer | 2.9M orders per second | drain, decode, match, event log append |
-| Ring end-to-end | 2.6M orders per second | producer and consumer together |
+| Ring end-to-end | 2.6M orders per second | producer and consumer together, tmpfs WAL |
 
-The full pipeline keeps about 59 percent of the raw matcher throughput. The gap is the cost
-of durability: the write-ahead logs, the event log, and the trade records that let the engine
-recover without replaying from the start.
+The pipeline retains about 59 percent of the raw matcher throughput after encoding, WAL
+append, ring handoff, and event logging. The rest is the work that lets the engine recover
+without replaying from the start.
 
 ## Scaling from a laptop to cloud hardware
 
@@ -121,6 +125,8 @@ The write-ahead logs use group commit: the producer fsyncs after a batch of appe
 short time bound, whichever comes first. Batching the fsync turns the log from a per record
 cost into a small fixed cost per batch.
 
+Group-commit overhead on tmpfs:
+
 | Write pattern | Throughput |
 |---|---|
 | Append with an fsync per record | 137 MB per second |
@@ -135,9 +141,9 @@ watermark makes the replay idempotent, and the producer replays any command the 
 not applied.
 
 Test: 100,000 orders placed at 20,006 orders per second while the engine is killed and
-restarted mid load. Result: 200 of 200 sampled orders verified, zero lost and zero
-duplicated. The projection service also resumes from a checkpoint committed in the same
-transaction as its data, so a restart never double counts.
+restarted mid load. Result: 200 of 200 sampled orders visible after the restart. The
+projection service also resumes from a checkpoint committed in the same transaction as its
+data, so a restart never double counts.
 
 ## Hot path allocations
 
@@ -145,14 +151,14 @@ The consumer started at five times the matcher's allocation count, which put avo
 pressure on the garbage collector. A profile showed the cost was a heap-allocated trade id
 per fill and a closure rebuilt on every order. Both are gone.
 
-Allocations per 100,000 orders:
+Allocations per 100,000-order iteration:
 
 | Path | Before | After |
 |---|---|---|
 | Matcher (baseline) | 46k | 46k |
 | Ring consumer | 229k | 47k |
 
-The consumer is now allocation-identical to the raw matcher.
+The consumer is now within about 2 percent of the raw matcher.
 
 ## How the numbers were measured
 
