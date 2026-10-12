@@ -1,27 +1,32 @@
 # TradeIT demo stack.
 #
+# Copy the environment template first; Compose reads .env for substitution:
+#
+#   cp .env.example .env
+#
 #   docker compose up -d --build                       # db + redis + the three services
 #   docker compose --profile observability up -d       # + Prometheus and Grafana
 #   docker compose --profile bench run --rm loadgen    # drive load and verify read-back
 #
-# All three services share the ingest volume (ipc_data) where the per-symbol rings and
-# WALs live, and mount config/ read-only for the shared symbol table and ingest knobs.
-# The db/redis host ports are overridable (TRADEIT_DB_PORT / TRADEIT_REDIS_PORT) so the
-# stack can run next to an existing Postgres or Redis; the services always reach them as
-# db:5432 and redis:6379 on the compose network regardless.
+# All three services share the ingest volume where the per-symbol rings and WALs live and
+# mount config/ read-only for the shared symbol table and ingest knobs. Credentials come
+# from .env, never from this file. The host ports are overridable so the stack can run
+# next to an existing Postgres or Redis; the services always reach them as db:5432 and
+# redis:6379 on the compose network regardless.
 
 name: tradeit
 
-# Environment shared by the three application services.
+# Environment shared by the three application services. db_host/redis_addr point at the
+# compose service names; credentials come from .env.
 x-app-env: &app-env
   TRADEIT_CONFIG: /app/config/tradeit.toml
   redis_addr: redis:6379
-  redis_password: ""
+  redis_password: ${redis_password:-}
   db_host: db
   db_port: "5432"
-  db_user: postgres
-  db_passwd: dev123
-  db_name: tradeit
+  db_user: ${db_user:?set db_user in .env (cp .env.example .env)}
+  db_passwd: ${db_passwd:?set db_passwd in .env (cp .env.example .env)}
+  db_name: ${db_name:?set db_name in .env (cp .env.example .env)}
 
 services:
   db:
@@ -32,13 +37,13 @@ services:
     ports:
       - "${TRADEIT_DB_PORT:-5432}:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=dev123
-      - POSTGRES_DB=tradeit
+      - POSTGRES_USER=${db_user:?set db_user in .env (cp .env.example .env)}
+      - POSTGRES_PASSWORD=${db_passwd:?set db_passwd in .env (cp .env.example .env)}
+      - POSTGRES_DB=${db_name:?set db_name in .env (cp .env.example .env)}
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d tradeit"]
+      test: ["CMD-SHELL", "pg_isready -U ${db_user} -d ${db_name}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -68,7 +73,7 @@ services:
       - "${TRADEIT_USER_ORDER_PORT:-8000}:8000"
     environment:
       <<: *app-env
-      jwtkey: ${JWTKEY:-dev-secret-change-me}
+      jwtkey: ${jwtkey:?set jwtkey in .env (cp .env.example .env)}
     volumes:
       - ipc_data:/app/ipc
       - ./config:/app/config:ro
@@ -174,7 +179,7 @@ services:
       - "${TRADEIT_GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${grafana_admin_password:-admin}
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:

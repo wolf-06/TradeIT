@@ -9,6 +9,7 @@
 # Benchmark output
 bench*.txt
 matcher_bench.txt
+load*.txt
 /bench
 benchmarks/
 

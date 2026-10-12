@@ -1,20 +1,18 @@
 # TradeIT shared configuration.
 #
-# The file location is provided to both services via the TRADEIT_CONFIG environment
+# The file location is provided to every service via the TRADEIT_CONFIG environment
 # variable (see .env). The ordered symbol list below is the single source of truth for
-# symbol ids: both the order service and the engine load this file, so name/id encoding
-# and decoding cannot drift.
+# symbol ids: all services load this file, so name/id encoding and decoding cannot drift.
 
 # Order matters: symbols[i] has id i.
 symbols = ["AAPL", "GOOG", "TSLA", "MSFT"]
 
 [ingest]
-# Select the shared-memory ring path over the legacy Redis path. Enabled here because the
-# demo runs the full ring pipeline; set false to fall back to the legacy Redis queue.
+# The shared-memory ring is the only order input path, so this must stay true.
 enabled = true
 
-# Directory holding the per-symbol ring and WAL files. All three services must point at
-# the same directory (a shared volume when running in Docker).
+# Directory holding the per-symbol ring and WAL files. All services must point at the
+# same directory (a shared volume when running in Docker).
 dir = "./ipc"
 
 # Number of slots per symbol ring. Must be a power of two. 2^18 * 64 B = 16 MiB/symbol.

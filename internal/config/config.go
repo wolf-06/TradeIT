@@ -71,11 +71,11 @@ func (p Projection) CacheTTL() time.Duration {
 
 // Ingest holds the shared-memory ingest settings.
 type Ingest struct {
-	// Enabled selects the shared-memory ring path over the legacy Redis path. Off by
-	// default so nothing changes until it is explicitly turned on.
+	// Enabled selects the shared-memory ring path. It must be true: the ring is the only
+	// order input path, and the services refuse to start when it is false.
 	Enabled bool `toml:"enabled"`
-	// Dir is the directory holding the per-symbol ring and WAL files. Both services
-	// must point at the same directory (a shared volume in Docker).
+	// Dir is the directory holding the per-symbol ring and WAL files. All services must
+	// point at the same directory (a shared volume in Docker).
 	Dir string `toml:"dir"`
 	// RingCapacity is the number of slots per symbol ring (power of two).
 	RingCapacity int `toml:"ring_capacity"`
@@ -137,8 +137,7 @@ func LoadFromEnv() (*Config, error) {
 }
 
 // LoadOptional loads the config file named by TRADEIT_CONFIG, or returns (nil, nil) when
-// the variable is unset. It lets a service fall back to its legacy behaviour when ingest
-// is not configured.
+// the variable is unset. It lets the caller decide whether the config is required.
 func LoadOptional() (*Config, error) {
 	path := os.Getenv("TRADEIT_CONFIG")
 	if path == "" {
