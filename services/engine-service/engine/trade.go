@@ -43,6 +43,11 @@ func tradeTS() *tsid.TSID {
 // immediately (recycling trade records) and no writer ever touches the database.
 var PersistenceEnabled = true
 
+// ringMode is set when the engine runs the shared-memory ring consumer. In that mode the
+// engine writes no database rows itself: trades and order status go to the durable event
+// log (the consumer WAL) and are projected by the projection service.
+var ringMode bool
+
 // The matcher does not write to PostgreSQL directly. It appends events to two buffered
 // queues and background writers drain them in batches - a write-ahead-log style hand-off.
 // This keeps the matching path free of per-fill goroutines and per-fill round trips, and
@@ -105,10 +110,21 @@ func checkTrade(orderid uint64) bool {
 	return status
 }
 
+// ringTradeSink, when non-nil, receives generated trades instead of the legacy in-memory
+// persistence queue. The ring handler installs it for the duration of one Apply call; the
+// consumer is single-threaded, so no synchronization is needed.
+var ringTradeSink func(models.TradeDetails)
+
 // enqueueTrade hands a filled trade to the batched writer. It owns the pooled record from
 // this point: with persistence off it is recycled immediately, otherwise the writer
-// recycles it once the batch has been written.
+// recycles it once the batch has been written. In ring mode the trade is handed to the
+// ring sink (which logs it to the durable event log) and recycled here.
 func enqueueTrade(trade *models.TradeDetails) {
+	if ringTradeSink != nil {
+		ringTradeSink(*trade)
+		tradePool.releaseTrade(trade)
+		return
+	}
 	if !PersistenceEnabled {
 		tradePool.releaseTrade(trade)
 		return
@@ -117,6 +133,11 @@ func enqueueTrade(trade *models.TradeDetails) {
 }
 
 func enqueueOrderStatus(order models.Order, status string) {
+	if ringMode {
+		// The applied record's outcome already carries the status; the projector writes
+		// it. Avoid any database work in the engine.
+		return
+	}
 	if !PersistenceEnabled {
 		return
 	}

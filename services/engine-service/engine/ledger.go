@@ -65,3 +65,12 @@ func (ld *Ledger) Modify(stock string, order_id uint64, newPrice int64, newQuant
 	}
 	return ob.Modify(order_id, newPrice, newQuantity)
 }
+
+// FilledQty reports how much of an order has been filled.
+func (ld *Ledger) FilledQty(stock string, order_id uint64, quantity int) int {
+	ob, exists := ld.ent[stock]
+	if !exists {
+		return quantity
+	}
+	return ob.FilledQty(order_id, quantity)
+}

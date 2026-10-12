@@ -23,7 +23,7 @@ func newTestHandler(t *testing.T) (*RingHandler, *Ledger) {
 
 func TestRingHandlerNewAndCancel(t *testing.T) {
 	h, ld := newTestHandler(t)
-	if o := h.Apply(newCmd(ipc.OpNew, 1, ipc.SideSell, ipc.TypeLimit, 100, 5)); o.Status != ipc.StatusAccepted {
+	if o := h.Apply(newCmd(ipc.OpNew, 1, ipc.SideSell, ipc.TypeLimit, 100, 5)); o.Status != ipc.StatusResting {
 		t.Fatalf("new: %+v", o)
 	}
 	ob := ld.ent["TEST"]

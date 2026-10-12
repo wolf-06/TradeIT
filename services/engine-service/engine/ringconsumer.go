@@ -41,6 +41,7 @@ func OpenRingConsumer(cfg *config.Config, ledger *Ledger, region *control.Region
 	if batch <= 0 {
 		batch = 1024
 	}
+	ringMode = true
 	return &RingConsumer{consumer: c, region: region, batch: batch}, nil
 }
 
