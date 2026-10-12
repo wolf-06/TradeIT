@@ -86,15 +86,6 @@ func (os *OrderService) parseOrder(c *gin.Context) (*models.MetaOrder, error) {
 	return order, nil
 }
 
-func (os *OrderService) CreateOrderService(c *gin.Context) bool {
-	order, err := os.parseOrder(c)
-	if err != nil {
-		return false
-	}
-	defer os.op.releaseOrder(order)
-	return repo.CreateOrder(os.db, *order)
-}
-
 // RingEnabled reports whether the shared-memory ingest path is active.
 func (os *OrderService) RingEnabled() bool { return repo.RingEnabled() }
 

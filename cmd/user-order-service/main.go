@@ -45,36 +45,38 @@ func main() {
 	orderController := controller.InitOrderController()
 	orderController.InitOrderRoutes(router)
 
-	// Opt in to the shared-memory ingest path. When enabled, order creation is published
-	// to the ring (durable in the producer WAL) instead of the synchronous DB+Redis path.
-	if cfg, err := config.LoadOptional(); err != nil {
+	// The shared-memory ring is the only order input path. Load the config and require it.
+	cfg, err := config.LoadOptional()
+	if err != nil {
 		log.Fatalln("Error in loading the ingest config: ", err)
-	} else if cfg != nil && cfg.Ingest.Enabled {
-		table, err := cfg.SymbolTable()
-		if err != nil {
-			log.Fatalln("Error building the symbol table: ", err)
-		}
-		p, err := producer.Open(cfg.Ingest.Dir, table, cfg.Ingest.RingCapacity, cfg.Ingest.SyncEveryN, cfg.Ingest.SyncEveryMs)
-		if err != nil {
-			log.Fatalln("Error opening the ring producer: ", err)
-		}
-		defer p.Close()
-
-		// Re-send orders the consumer has not applied. The consumer publishes its
-		// watermark to the shared control region; wait for it (1s, 2s, 3s) then fall
-		// back to replaying from the oldest record.
-		region, err := control.OpenOrCreate(cfg.ControlPath(), len(cfg.Symbols))
-		if err != nil {
-			log.Fatalln("Error opening the control region: ", err)
-		}
-		defer region.Close()
-		if err := p.Replay(readWatermarks(region, len(cfg.Symbols))); err != nil {
-			log.Fatalln("Error replaying orders: ", err)
-		}
-
-		repo.SetRingProducer(p)
-		fmt.Printf("user-order-service: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
 	}
+	if cfg == nil || !cfg.Ingest.Enabled {
+		log.Fatalln("user-order-service: TRADEIT_CONFIG with ingest.enabled = true is required")
+	}
+	table, err := cfg.SymbolTable()
+	if err != nil {
+		log.Fatalln("Error building the symbol table: ", err)
+	}
+	p, err := producer.Open(cfg.Ingest.Dir, table, cfg.Ingest.RingCapacity, cfg.Ingest.SyncEveryN, cfg.Ingest.SyncEveryMs)
+	if err != nil {
+		log.Fatalln("Error opening the ring producer: ", err)
+	}
+	defer p.Close()
+
+	// Re-send orders the consumer has not applied. The consumer publishes its watermark
+	// to the shared control region; wait for it (1s, 2s, 3s) then fall back to replaying
+	// from the oldest record.
+	region, err := control.OpenOrCreate(cfg.ControlPath(), len(cfg.Symbols))
+	if err != nil {
+		log.Fatalln("Error opening the control region: ", err)
+	}
+	defer region.Close()
+	if err := p.Replay(readWatermarks(region, len(cfg.Symbols))); err != nil {
+		log.Fatalln("Error replaying orders: ", err)
+	}
+
+	repo.SetRingProducer(p)
+	fmt.Printf("user-order-service: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
 
 	router.Run(":8000")
 }

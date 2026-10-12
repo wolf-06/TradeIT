@@ -11,9 +11,8 @@ import (
 )
 
 // RingConsumer drains the shared-memory rings and applies commands to a ledger. It is the
-// ring-mode replacement for OrderEngine.ProcessOrderQueue. It also publishes its
-// per-symbol watermark to the shared control region so the producer knows where to resume
-// replaying after a restart.
+// engine's input path. It also publishes its per-symbol watermark to the shared control
+// region so the producer knows where to resume replaying after a restart.
 type RingConsumer struct {
 	consumer *ingest.Consumer
 	region   *control.Region

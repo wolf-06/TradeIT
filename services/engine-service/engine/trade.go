@@ -87,29 +87,6 @@ func InitTrade() {
 	})
 }
 
-func TestDB() bool {
-	return (tradeDB() == nil)
-}
-
-func checkTrade(orderid uint64) bool {
-	temp := tradePool.acquireTrade()
-	var status = true
-	result := tradeDB().Where("bid_order_id= ? or ask_order_id = ?", orderid, orderid).Find(&temp)
-	if result.Error != nil {
-		log.Println("error occured in databse query: ", result.Error)
-		tradePool.releaseTrade(temp)
-		// Fail closed: the lookup failed, so report the order as traded rather than
-		// letting an executed order be reported as cancelled. (This used to be a
-		// log.Fatalf, which killed the whole engine on a database hiccup.)
-		return true
-	}
-	if result.RowsAffected == 0 {
-		status = false
-	}
-	tradePool.releaseTrade(temp)
-	return status
-}
-
 // ringTradeSink, when non-nil, receives generated trades instead of the legacy in-memory
 // persistence queue. The ring handler installs it for the duration of one Apply call; the
 // consumer is single-threaded, so no synchronization is needed.
