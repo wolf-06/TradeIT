@@ -126,6 +126,17 @@ scripts/smoke.sh 20000 64
 scripts/recovery.sh 20000 64
 ```
 
+Benchmarks — one script collects everything (environment, the in-process hot path, the
+component micro-benchmarks, and — when the stack is up — the end-to-end load test, pipeline
+metrics and row counts) into a single markdown report:
+
+```bash
+scripts/bench.sh                    # -> benchmarks/bench-<timestamp>.md
+RECOVERY=yes scripts/bench.sh       # also run the kill/restart recovery demo
+E2E=no scripts/bench.sh             # only the in-process benchmarks (no stack needed)
+PROFILE=yes scripts/bench.sh        # also capture CPU + allocation profiles
+```
+
 Observability (Prometheus + Grafana with a provisioned dashboard):
 
 ```bash
