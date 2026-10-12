@@ -109,6 +109,22 @@ func OpenReader(path string) (*Reader, error) {
 	return &Reader{f: f, br: bufio.NewReaderSize(f, 1<<20)}, nil
 }
 
+// OpenReaderAt opens path for reading starting at the given byte offset. Offset() then
+// reports absolute offsets.
+func OpenReaderAt(path string, offset int64) (*Reader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("wal: open %s: %w", path, err)
+	}
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("wal: seek %s: %w", path, err)
+		}
+	}
+	return &Reader{f: f, br: bufio.NewReaderSize(f, 1<<20), off: offset}, nil
+}
+
 // Next returns the next payload, io.EOF at a clean end of file, or ErrTornTail if the
 // trailing record is truncated or corrupt.
 func (r *Reader) Next() ([]byte, error) {

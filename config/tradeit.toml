@@ -35,3 +35,16 @@ snapshot_every_ms = 30000
 
 # Snapshot body compression: "none", "gzip" or "zstd".
 snapshot_codec = "zstd"
+
+[projection]
+# How many records the projection service processes per pass.
+batch_size = 512
+
+# Maximum time before a partial batch is written to the database.
+flush_ms = 5
+
+# How often the projection service polls the event log for new records.
+poll_ms = 2
+
+# Order-status cache TTL in seconds (broker read layer); 0 disables expiry.
+cache_ttl_seconds = 1800

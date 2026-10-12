@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -19,8 +20,53 @@ import (
 
 // Config is the root configuration document.
 type Config struct {
-	Symbols []string `toml:"symbols"`
-	Ingest  Ingest   `toml:"ingest"`
+	Symbols    []string   `toml:"symbols"`
+	Ingest     Ingest     `toml:"ingest"`
+	Projection Projection `toml:"projection"`
+}
+
+// Projection configures the projection service.
+type Projection struct {
+	// BatchSize bounds how many records/orders the projector processes per pass.
+	BatchSize int `toml:"batch_size"`
+	// FlushMs is the maximum time before a partial batch is written.
+	FlushMs int `toml:"flush_ms"`
+	// PollMs is how often the projector polls the event log for new records.
+	PollMs int `toml:"poll_ms"`
+	// CacheTTLSeconds is the order-status cache TTL; 0 disables expiry.
+	CacheTTLSeconds int `toml:"cache_ttl_seconds"`
+}
+
+// Batch returns the configured batch size (default 512).
+func (p Projection) Batch() int {
+	if p.BatchSize > 0 {
+		return p.BatchSize
+	}
+	return 512
+}
+
+// FlushInterval returns the configured flush interval.
+func (p Projection) FlushInterval() time.Duration {
+	if p.FlushMs > 0 {
+		return time.Duration(p.FlushMs) * time.Millisecond
+	}
+	return 5 * time.Millisecond
+}
+
+// PollInterval returns the configured poll interval.
+func (p Projection) PollInterval() time.Duration {
+	if p.PollMs > 0 {
+		return time.Duration(p.PollMs) * time.Millisecond
+	}
+	return 2 * time.Millisecond
+}
+
+// CacheTTL returns the configured cache TTL.
+func (p Projection) CacheTTL() time.Duration {
+	if p.CacheTTLSeconds > 0 {
+		return time.Duration(p.CacheTTLSeconds) * time.Second
+	}
+	return 30 * time.Minute
 }
 
 // Ingest holds the shared-memory ingest settings.
