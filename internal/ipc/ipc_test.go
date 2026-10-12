@@ -16,7 +16,7 @@ func TestCmdRoundTrip(t *testing.T) {
 		Version:   7,
 		SymbolID:  3,
 		Qty:       -5, // exercise signed round-trip
-		Remq:      42,
+		CreatedAt: 123456789,
 		Op:        OpModify,
 		Side:      SideSell,
 		Typ:       TypeMarket,
@@ -39,7 +39,7 @@ func TestOutcomeRoundTrip(t *testing.T) {
 }
 
 func TestAppliedRoundTrip(t *testing.T) {
-	c := Cmd{RequestID: 1, OrderID: 2, Seq: 3, Price: 100, Version: 1, SymbolID: 2, Qty: 10, Remq: 4, Op: OpNew, Side: SideBuy, Typ: TypeLimit}
+	c := Cmd{RequestID: 1, OrderID: 2, Seq: 3, Price: 100, Version: 1, SymbolID: 2, Qty: 10, CreatedAt: 5, Op: OpNew, Side: SideBuy, Typ: TypeLimit}
 	o := Outcome{AvgPrice: 100, FilledQty: 6, Err: 0, Status: StatusPartiallyFilled}
 	buf := make([]byte, AppliedSize)
 	EncodeApplied(buf, c, o)
@@ -52,7 +52,7 @@ func TestAppliedRoundTrip(t *testing.T) {
 // TestEncodeIsCanonical verifies reserved bytes are zeroed and repeated encodes are
 // byte-identical, so WAL CRCs are stable for equal records.
 func TestEncodeIsCanonical(t *testing.T) {
-	c := Cmd{RequestID: 1, OrderID: 2, Seq: 3, Price: 4, Version: 5, SymbolID: 6, Qty: 7, Remq: 8, Op: OpCancel, Side: SideBuy, Typ: TypeLimit}
+	c := Cmd{RequestID: 1, OrderID: 2, Seq: 3, Price: 4, Version: 5, SymbolID: 6, Qty: 7, CreatedAt: 9, Op: OpCancel, Side: SideBuy, Typ: TypeLimit}
 	a := make([]byte, CmdSize)
 	b := make([]byte, CmdSize)
 	c.Encode(a)
@@ -69,7 +69,7 @@ func TestEncodeIsCanonical(t *testing.T) {
 
 // TestDecodeIgnoresReserved confirms reserved bytes do not affect the decoded value.
 func TestDecodeIgnoresReserved(t *testing.T) {
-	c := Cmd{RequestID: 9, OrderID: 8, Seq: 7, Price: 6, Version: 5, SymbolID: 4, Qty: 3, Remq: 2, Op: OpReduceQty, Side: SideSell, Typ: TypeMarket}
+	c := Cmd{RequestID: 9, OrderID: 8, Seq: 7, Price: 6, Version: 5, SymbolID: 4, Qty: 3, CreatedAt: 1, Op: OpReduceQty, Side: SideSell, Typ: TypeMarket}
 	buf := make([]byte, CmdSize)
 	c.Encode(buf)
 	for i := offTyp + 1; i < CmdSize; i++ {

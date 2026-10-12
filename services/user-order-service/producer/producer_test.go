@@ -90,7 +90,7 @@ func TestSubmitOrderDrainedByConsumer(t *testing.T) {
 		t.Fatalf("drained %d (applied %d), want 1", n, len(h.applied))
 	}
 	got := h.applied[0]
-	if got.OrderID != id || got.UserID != 7 || got.Side != ipc.SideSell || got.Typ != ipc.TypeLimit || got.Price != 100 || got.Qty != 5 || got.Remq != 5 {
+	if got.OrderID != id || got.UserID != 7 || got.Side != ipc.SideSell || got.Typ != ipc.TypeLimit || got.Price != 100 || got.Qty != 5 {
 		t.Fatalf("applied cmd = %+v", got)
 	}
 }

@@ -52,10 +52,10 @@ func TestEndToEndTwoSymbols(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 100, Qty: 10, Remq: 10}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 100, Qty: 10}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 1, OrderID: uint64(100 + i), Op: ipc.OpNew, Side: ipc.SideSell, Typ: ipc.TypeLimit, Price: 200, Qty: 10, Remq: 10}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 1, OrderID: uint64(100 + i), Op: ipc.OpNew, Side: ipc.SideSell, Typ: ipc.TypeLimit, Price: 200, Qty: 10}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -92,7 +92,7 @@ func TestConsumerRecoveryNoDoubleApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 100, Qty: 1, Remq: 1}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 100, Qty: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -136,7 +136,7 @@ func TestProducerSeqResume(t *testing.T) {
 	tbl, _ := symbol.New([]string{"AAPL"})
 	p, _ := OpenProducer(dir, tbl, 64)
 	for i := 0; i < 5; i++ {
-		p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 1, Qty: 1, Remq: 1})
+		p.Publish(ipc.Cmd{SymbolID: 0, OrderID: uint64(i), Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 1, Qty: 1})
 	}
 	p.Sync()
 	p.Close()
@@ -146,7 +146,7 @@ func TestProducerSeqResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p2.Close()
-	seq, err := p2.Publish(ipc.Cmd{SymbolID: 0, OrderID: 99, Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 1, Qty: 1, Remq: 1})
+	seq, err := p2.Publish(ipc.Cmd{SymbolID: 0, OrderID: 99, Op: ipc.OpNew, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Price: 1, Qty: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,11 +161,11 @@ func TestRingFull(t *testing.T) {
 	p, _ := OpenProducer(dir, tbl, 4)
 	defer p.Close()
 	for i := 0; i < 4; i++ {
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1, Remq: 1}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1}); err != nil {
 			t.Fatalf("publish %d: %v", i, err)
 		}
 	}
-	if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1, Remq: 1}); !errors.Is(err, ErrRingFull) {
+	if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1}); !errors.Is(err, ErrRingFull) {
 		t.Fatalf("err = %v, want ErrRingFull", err)
 	}
 }

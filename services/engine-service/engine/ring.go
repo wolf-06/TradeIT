@@ -100,9 +100,11 @@ func (h *RingHandler) apply(c ipc.Cmd) ipc.Outcome {
 }
 
 // toOrder converts a command into the models.Order the matcher consumes. Prices are
-// already scaled integers; the symbol name comes from the shared table.
+// already scaled integers; the symbol name comes from the shared table. It reads no clock:
+// the creation time is the producer's batch timestamp, and Remq is the quantity (a new
+// order is fully remaining).
 func (h *RingHandler) toOrder(c ipc.Cmd, name string) models.Order {
-	return models.Order{
+	o := models.Order{
 		MetaOrder: models.MetaOrder{
 			Id:         c.OrderID,
 			User_id:    int(c.UserID),
@@ -112,10 +114,13 @@ func (h *RingHandler) toOrder(c ipc.Cmd, name string) models.Order {
 			Price:      c.Price,
 			Quantity:   int(c.Qty),
 			Status:     "pending",
-			Created_at: time.Now(),
 		},
-		Remq: int(c.Remq),
+		Remq: int(c.Qty),
 	}
+	if c.CreatedAt != 0 {
+		o.Created_at = time.Unix(0, c.CreatedAt)
+	}
+	return o
 }
 
 func outcomeFromError(err error) ipc.Outcome {

@@ -228,6 +228,8 @@ func (p *Producer) Replay(from []uint64) error {
 func (p *Producer) SubmitOrders(items []OrderItem) ([]SubmittedOrder, error) {
 	cmds := make([]ipc.Cmd, len(items))
 	out := make([]SubmittedOrder, len(items))
+	// One clock read for the whole batch; the consumer never reads the clock.
+	now := time.Now().UnixNano()
 	for i := range items {
 		o := items[i].Order
 		orderID := o.Id
@@ -242,7 +244,7 @@ func (p *Producer) SubmitOrders(items []OrderItem) ([]SubmittedOrder, error) {
 			SymbolID:  items[i].SymbolID,
 			Price:     o.Price,
 			Qty:       int32(o.Quantity),
-			Remq:      int32(o.Quantity),
+			CreatedAt: now,
 			Op:        ipc.OpNew,
 			Side:      sideOf(o.Side),
 			Typ:       typOf(o.Order_Type),

@@ -48,7 +48,7 @@ func TestConsumerSnapshotsAndRecovers(t *testing.T) {
 	}
 	defer p.Close()
 	for i := 0; i < 10; i++ {
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1, Remq: 1}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -108,7 +108,7 @@ func TestProducerReplay(t *testing.T) {
 	}
 	defer p.Close()
 	for i := 0; i < 5; i++ {
-		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1, Remq: 1}); err != nil {
+		if _, err := p.Publish(ipc.Cmd{SymbolID: 0, Op: ipc.OpNew, Qty: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

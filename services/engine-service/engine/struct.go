@@ -77,9 +77,9 @@ type priceLevel struct {
 	size int
 }
 
-func (l *priceLevel) pushBack(o *models.Order, side, typ uint8) *Node {
+func (l *priceLevel) pushBack(o models.Order, side, typ uint8) *Node {
 	n := acquireNode()
-	n.Order_ = *o
+	n.Order_ = o
 	n.side = side
 	n.typ = typ
 	if l.tail == nil {

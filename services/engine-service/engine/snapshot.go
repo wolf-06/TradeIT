@@ -116,7 +116,7 @@ func restoreMarket(ob *Orderbook, lvl *priceLevel, r *reader, name string, side,
 	n := r.u32()
 	for i := uint32(0); i < n; i++ {
 		o := r.order(name, 0, side, typ)
-		ob.orderTable[o.Id] = lvl.pushBack(&o, side, typ)
+		ob.orderTable[o.Id] = lvl.pushBack(o, side, typ)
 	}
 }
 
@@ -128,7 +128,7 @@ func restoreLadder(ob *Orderbook, l *ladder, r *reader, name string, side uint8)
 		lvl := l.addLevel(price)
 		for j := uint32(0); j < count; j++ {
 			o := r.order(name, price, side, typeLimit)
-			ob.orderTable[o.Id] = lvl.pushBack(&o, side, typeLimit)
+			ob.orderTable[o.Id] = lvl.pushBack(o, side, typeLimit)
 		}
 	}
 }

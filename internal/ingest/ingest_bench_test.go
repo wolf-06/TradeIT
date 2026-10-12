@@ -68,7 +68,7 @@ func publishOne(b *testing.B, p *Producer, cmd ipc.Cmd) {
 func BenchmarkPublishNoSync(b *testing.B) {
 	p, cleanup := benchProducer(b)
 	defer cleanup()
-	cmd := ipc.Cmd{Op: ipc.OpNew, SymbolID: 0, Qty: 1, Remq: 1}
+	cmd := ipc.Cmd{Op: ipc.OpNew, SymbolID: 0, Qty: 1}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		publishOne(b, p, cmd)
@@ -80,7 +80,7 @@ func BenchmarkPublishNoSync(b *testing.B) {
 func BenchmarkPublishSyncPerRecord(b *testing.B) {
 	p, cleanup := benchProducer(b)
 	defer cleanup()
-	cmd := ipc.Cmd{Op: ipc.OpNew, SymbolID: 0, Qty: 1, Remq: 1}
+	cmd := ipc.Cmd{Op: ipc.OpNew, SymbolID: 0, Qty: 1}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		publishOne(b, p, cmd)

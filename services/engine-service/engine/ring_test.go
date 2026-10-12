@@ -8,7 +8,7 @@ import (
 )
 
 func newCmd(op ipc.OpType, id uint64, side ipc.Side, typ ipc.OrderType, price int64, qty int32) ipc.Cmd {
-	return ipc.Cmd{Op: op, OrderID: id, Side: side, Typ: typ, Price: price, Qty: qty, Remq: qty, SymbolID: 0}
+	return ipc.Cmd{Op: op, OrderID: id, Side: side, Typ: typ, Price: price, Qty: qty, SymbolID: 0}
 }
 
 func newTestHandler(t *testing.T) (*RingHandler, *Ledger) {
@@ -86,7 +86,7 @@ func TestRingHandlerModifyExecutedRejected(t *testing.T) {
 
 func TestRingHandlerUnknownSymbol(t *testing.T) {
 	h, _ := newTestHandler(t)
-	o := h.Apply(ipc.Cmd{Op: ipc.OpNew, SymbolID: 9, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Qty: 1, Remq: 1})
+	o := h.Apply(ipc.Cmd{Op: ipc.OpNew, SymbolID: 9, Side: ipc.SideBuy, Typ: ipc.TypeLimit, Qty: 1})
 	if o.Status != ipc.StatusRejected || o.Err != ErrUnknownSymbol {
 		t.Fatalf("unknown symbol: %+v", o)
 	}

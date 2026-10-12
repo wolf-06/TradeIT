@@ -72,10 +72,10 @@ func (ob *Orderbook) GetSellOrders() map[int64]int { return ob.asks.snapshot() }
 func (ob *Orderbook) InsertOrder(orderData models.Order) error {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
-	return ob.insertOrder(&orderData)
+	return ob.insertOrder(orderData)
 }
 
-func (ob *Orderbook) insertOrder(orderData *models.Order) error {
+func (ob *Orderbook) insertOrder(orderData models.Order) error {
 	typ, ok := parseType(orderData.Order_Type)
 	if !ok {
 		return errors.New("ORDER_INVALID_TYPE")
@@ -254,7 +254,7 @@ func (ob *Orderbook) matchLocked(order models.Order) error {
 	}
 
 	if order.Remq > 0 {
-		if err := ob.insertOrder(&order); err != nil {
+		if err := ob.insertOrder(order); err != nil {
 			return err
 		}
 	}

@@ -105,17 +105,19 @@ func (s Status) String() string {
 
 // Cmd is the fixed-size command record. RequestID correlates an API request with its
 // result; (SymbolID, Seq) is the internal replay identity; OrderID+Version identify the
-// order across its lifecycle.
+// order across its lifecycle. CreatedAt is stamped by the producer (one clock read per
+// batch) so the consumer never reads the clock on the hot path; Remq is not carried
+// because a new order's remaining quantity is always its quantity.
 type Cmd struct {
 	RequestID uint64
 	OrderID   uint64
 	Seq       uint64
 	Price     int64
 	UserID    int64
+	CreatedAt int64 // unix nanoseconds; 0 means unset
 	Version   uint32
 	SymbolID  uint32
 	Qty       int32
-	Remq      int32
 	Op        OpType
 	Side      Side
 	Typ       OrderType

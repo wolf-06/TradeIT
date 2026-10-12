@@ -17,13 +17,13 @@ const (
 	offSeq       = 16
 	offPrice     = 24
 	offUserID    = 32
-	offVersion   = 40
-	offSymbolID  = 44
-	offQty       = 48
-	offRemq      = 52
-	offOp        = 56
-	offSide      = 57
-	offTyp       = 58
+	offCreatedAt = 40
+	offVersion   = 48
+	offSymbolID  = 52
+	offQty       = 56
+	offOp        = 60
+	offSide      = 61
+	offTyp       = 62
 )
 
 // Outcome field offsets within the 16-byte encoding.
@@ -43,10 +43,10 @@ func (c Cmd) Encode(dst []byte) {
 	binary.LittleEndian.PutUint64(dst[offSeq:], c.Seq)
 	binary.LittleEndian.PutUint64(dst[offPrice:], uint64(c.Price))
 	binary.LittleEndian.PutUint64(dst[offUserID:], uint64(c.UserID))
+	binary.LittleEndian.PutUint64(dst[offCreatedAt:], uint64(c.CreatedAt))
 	binary.LittleEndian.PutUint32(dst[offVersion:], c.Version)
 	binary.LittleEndian.PutUint32(dst[offSymbolID:], c.SymbolID)
 	binary.LittleEndian.PutUint32(dst[offQty:], uint32(c.Qty))
-	binary.LittleEndian.PutUint32(dst[offRemq:], uint32(c.Remq))
 	dst[offOp] = byte(c.Op)
 	dst[offSide] = byte(c.Side)
 	dst[offTyp] = byte(c.Typ)
@@ -64,10 +64,10 @@ func DecodeCmd(src []byte) Cmd {
 		Seq:       binary.LittleEndian.Uint64(src[offSeq:]),
 		Price:     int64(binary.LittleEndian.Uint64(src[offPrice:])),
 		UserID:    int64(binary.LittleEndian.Uint64(src[offUserID:])),
+		CreatedAt: int64(binary.LittleEndian.Uint64(src[offCreatedAt:])),
 		Version:   binary.LittleEndian.Uint32(src[offVersion:]),
 		SymbolID:  binary.LittleEndian.Uint32(src[offSymbolID:]),
 		Qty:       int32(binary.LittleEndian.Uint32(src[offQty:])),
-		Remq:      int32(binary.LittleEndian.Uint32(src[offRemq:])),
 		Op:        OpType(src[offOp]),
 		Side:      Side(src[offSide]),
 		Typ:       OrderType(src[offTyp]),
