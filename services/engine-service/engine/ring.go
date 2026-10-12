@@ -2,9 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
-
-	"github.com/svicknesh/tsid"
 
 	"TradeIT/internal/ipc"
 	"TradeIT/internal/models"
@@ -14,18 +13,18 @@ import (
 // Error codes carried in ipc.Outcome.Err. They are stable wire values, not error
 // strings.
 const (
-	ErrNone             uint16 = 0
-	ErrUnknownSymbol    uint16 = 100
-	ErrUnknownOp        uint16 = 101
-	ErrOrderNotInBook   uint16 = 102
-	ErrOrderProcessed   uint16 = 103
-	ErrPartialDecrease  uint16 = 104
-	ErrInvalidPrice     uint16 = 105
-	ErrInvalidQuantity  uint16 = 106
-	ErrInvalidSide      uint16 = 107
-	ErrInvalidType      uint16 = 108
-	ErrInvalidStock     uint16 = 109
-	ErrOther            uint16 = 255
+	ErrNone            uint16 = 0
+	ErrUnknownSymbol   uint16 = 100
+	ErrUnknownOp       uint16 = 101
+	ErrOrderNotInBook  uint16 = 102
+	ErrOrderProcessed  uint16 = 103
+	ErrPartialDecrease uint16 = 104
+	ErrInvalidPrice    uint16 = 105
+	ErrInvalidQuantity uint16 = 106
+	ErrInvalidSide     uint16 = 107
+	ErrInvalidType     uint16 = 108
+	ErrInvalidStock    uint16 = 109
+	ErrOther           uint16 = 255
 )
 
 // RingHandler applies commands from the shared-memory ring to the ledger. It implements
@@ -34,21 +33,30 @@ const (
 type RingHandler struct {
 	ledger  *Ledger
 	table   *symbol.Table
-	tradeTS *tsid.TSID
+	tradeID atomic.Uint64
 	trades  []ipc.Trade
+	sink    func(models.TradeDetails)
 }
 
 // NewRingHandler builds a handler that routes commands to ledger using the shared
 // symbol table to resolve symbol ids.
 func NewRingHandler(ledger *Ledger, table *symbol.Table) *RingHandler {
-	return &RingHandler{ledger: ledger, table: table, tradeTS: tsid.NewDefault()}
+	h := &RingHandler{ledger: ledger, table: table}
+	// Trade ids must be unique across runs (they are the trade primary key), so seed a
+	// monotonic counter from the clock. Unlike the TSID generator this allocates nothing
+	// per trade.
+	h.tradeID.Store(uint64(time.Now().UnixNano()))
+	// Precompute the bound method once. Assigning h.collectTrade to the package-global
+	// sink on every Apply allocated a closure per order.
+	h.sink = h.collectTrade
+	return h
 }
 
 // Apply applies one command and reports its outcome. It collects any trades generated
 // while matching so the consumer can log them to the durable event log.
 func (h *RingHandler) Apply(c ipc.Cmd) ipc.Outcome {
 	h.trades = h.trades[:0]
-	ringTradeSink = h.collectTrade
+	ringTradeSink = h.sink
 	defer func() { ringTradeSink = nil }()
 	return h.apply(c)
 }
@@ -60,7 +68,7 @@ func (h *RingHandler) Trades() []ipc.Trade { return h.trades }
 func (h *RingHandler) collectTrade(t models.TradeDetails) {
 	sid, _ := h.table.ID(t.Stock)
 	h.trades = append(h.trades, ipc.Trade{
-		TradeID:    h.tradeTS.Generate().Number,
+		TradeID:    h.tradeID.Add(1),
 		BidOrderID: t.BidOrderID,
 		AskOrderID: t.AskOrderID,
 		Buyer:      int64(t.Buyer),

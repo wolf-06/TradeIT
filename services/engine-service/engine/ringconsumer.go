@@ -32,6 +32,10 @@ func OpenRingConsumer(cfg *config.Config, ledger *Ledger, region *control.Region
 		SnapshotEveryMs: cfg.Ingest.SnapshotEveryMs,
 		Codec:           snapshot.ParseCodec(cfg.Ingest.SnapshotCodec),
 	}
+	// Set ring mode BEFORE opening the consumer: opening replays the applied WAL into the
+	// ledger to rebuild the book, and that replay must not persist the regenerated trades
+	// (the projector owns persistence in ring mode).
+	ringMode = true
 	c, err := ingest.OpenConsumerWithOptions(cfg.Ingest.Dir, table, NewRingHandler(ledger, table), opts)
 	if err != nil {
 		return nil, err
@@ -40,7 +44,6 @@ func OpenRingConsumer(cfg *config.Config, ledger *Ledger, region *control.Region
 	if batch <= 0 {
 		batch = 1024
 	}
-	ringMode = true
 	return &RingConsumer{consumer: c, region: region, batch: batch}, nil
 }
 

@@ -102,6 +102,14 @@ func enqueueTrade(trade *models.TradeDetails) {
 		tradePool.releaseTrade(trade)
 		return
 	}
+	if ringMode {
+		// Ring mode: the projector owns persistence, and the original trades are already
+		// in the consumer event log. Trades regenerated during replay (when no sink is
+		// installed) must NOT be written by the engine - doing so duplicated every trade
+		// replayed since the last snapshot on each restart.
+		tradePool.releaseTrade(trade)
+		return
+	}
 	if !PersistenceEnabled {
 		tradePool.releaseTrade(trade)
 		return
