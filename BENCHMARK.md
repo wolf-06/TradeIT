@@ -169,6 +169,9 @@ The consumer is now within about 2 percent of the raw matcher.
   orders, and verifies read back through the API.
 - The improvement comparison ran on a Ryzen 7 4700U (8 threads). The current capability ran
   on an AWS EC2 `c7i.2xlarge` (8 threads, Go 1.23.5) with `GOMAXPROCS` set to the core count.
+- The raw report behind the current capability numbers is committed at
+  [docs/benchmarks/2026-10-12-ec2-c7i2xlarge.md](docs/benchmarks/2026-10-12-ec2-c7i2xlarge.md),
+  with the commit SHA, host, commands, workload parameters, and the per-run medians.
 
 Reproduce everything with one command:
 
