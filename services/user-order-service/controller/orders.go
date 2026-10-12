@@ -27,6 +27,7 @@ func (oc *OrderController) InitOrderRoutes(router *gin.Engine) {
 		protected.POST("/create", oc.PlaceOrder())
 		protected.POST("/cancel", oc.CancelOrder())
 		protected.POST("/modify", oc.ModifyOrder())
+		protected.GET("/:id", oc.GetOrderStatus())
 	}
 }
 
@@ -108,6 +109,17 @@ func (oc *OrderController) CancelOrder() gin.HandlerFunc {
 			"orderid": res.OrderID,
 			"seq":     res.Seq,
 		})
+	}
+}
+
+// GetOrderStatus returns one order's status from the cache or database.
+func (oc *OrderController) GetOrderStatus() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		body := oc.orderService.GetOrderStatusService(ctx)
+		if ctx.IsAborted() { // service already replied (400/404)
+			return
+		}
+		ctx.Data(http.StatusOK, "application/json", body)
 	}
 }
 

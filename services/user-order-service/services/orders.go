@@ -7,6 +7,7 @@ import (
 	"TradeIT/services/user-order-service/producer"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -135,6 +136,22 @@ func (os *OrderService) GetOrderByParameterService(c *gin.Context) []byte {
 	}
 	json := repo.GetOrders(os.db, user_id.(float64), Query)
 	return json
+}
+
+// GetOrderStatusService returns one order's status: the cache first (populated by the
+// projection service), the database on a miss.
+func (os *OrderService) GetOrderStatusService(c *gin.Context) []byte {
+	orderID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
+		return nil
+	}
+	b, found, err := repo.GetOrderStatus(os.db, orderID)
+	if err != nil || !found {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return nil
+	}
+	return b
 }
 
 // CancelOrderService publishes a cancellation. Cancel/modify require the shared-memory

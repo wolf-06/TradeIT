@@ -26,6 +26,41 @@ func SetRingProducer(p *producer.Producer) { ringProducer = p }
 // RingEnabled reports whether the shared-memory ingest path is active.
 func RingEnabled() bool { return ringProducer != nil }
 
+// statusCache is the read-only order-status cache the projection service populates.
+var statusCache = redis.NewClient(&redis.Options{
+	Addr:     os.Getenv("redis_addr"),
+	Password: os.Getenv("redis_password"),
+})
+
+// orderStatusView is the wire shape returned by the per-order status endpoint, matching
+// what the projection service caches.
+type orderStatusView struct {
+	Status   string `json:"status"`
+	Remq     int    `json:"remq"`
+	AvgPrice int64  `json:"avgPrice"`
+}
+
+// GetOrderStatus returns one order's status. It reads the cache first and falls back to
+// the database on a miss (repopulating the cache). The database is the source of truth;
+// the cache is best-effort.
+func GetOrderStatus(db *gorm.DB, orderID uint64) ([]byte, bool, error) {
+	ctx := context.Background()
+	key := "order:" + strconv.FormatUint(orderID, 10)
+	if b, err := statusCache.Get(ctx, key).Bytes(); err == nil {
+		return b, true, nil
+	}
+	var o models.Order
+	if err := db.Where("id = ?", orderID).First(&o).Error; err != nil {
+		return nil, false, err
+	}
+	b, err := json.Marshal(orderStatusView{Status: o.Status, Remq: o.Remq, AvgPrice: o.AvgPrice})
+	if err != nil {
+		return nil, false, err
+	}
+	statusCache.Set(ctx, key, b, 30*time.Minute)
+	return b, true, nil
+}
+
 // CreateOrderRing submits an order through the shared-memory ring and returns its id and
 // per-symbol sequence. The producer WAL is the durability point, so no synchronous DB
 // write happens here; the order row is written later by the projection service.
