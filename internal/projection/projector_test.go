@@ -12,25 +12,37 @@ import (
 )
 
 type fakeStore struct {
-	orders map[uint64]models.Order
-	trades []models.TradeDetails
+	orders      map[uint64]models.Order
+	trades      []models.TradeDetails
+	checkpoints map[uint32]Checkpoint
+	commits     int
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{orders: map[uint64]models.Order{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{orders: map[uint64]models.Order{}, checkpoints: map[uint32]Checkpoint{}}
+}
 
-func (s *fakeStore) UpsertOrders(orders []models.Order) error {
-	for _, o := range orders {
-		s.orders[o.Id] = o
-	}
-	return nil
-}
-func (s *fakeStore) InsertTrades(trades []models.TradeDetails) error {
-	s.trades = append(s.trades, trades...)
-	return nil
-}
 func (s *fakeStore) GetOrder(id uint64) (models.Order, bool, error) {
 	o, ok := s.orders[id]
 	return o, ok, nil
+}
+
+func (s *fakeStore) LoadCheckpoints() (map[uint32]Checkpoint, error) {
+	out := make(map[uint32]Checkpoint, len(s.checkpoints))
+	for k, v := range s.checkpoints {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *fakeStore) CommitBatch(orders []models.Order, trades []models.TradeDetails, cp Checkpoint) error {
+	for _, o := range orders {
+		s.orders[o.Id] = o
+	}
+	s.trades = append(s.trades, trades...)
+	s.checkpoints[cp.SymbolID] = cp
+	s.commits++
+	return nil
 }
 
 type fakeCache struct{ status map[uint64]string }
@@ -98,6 +110,80 @@ func TestProjectorProjectsOrdersAndTrades(t *testing.T) {
 	}
 	if cache.status[1] != "filled" || cache.status[2] != "filled" {
 		t.Fatalf("cache status = %+v, want both filled", cache.status)
+	}
+}
+
+// TestProjectorResumesFromCheckpoint verifies that a restart resumes at the committed
+// offset (not from the start) and that the running fill value is seeded from the database,
+// so an order's average price stays correct across the restart.
+func TestProjectorResumesFromCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	tbl, _ := symbol.New([]string{"AAPL"})
+	path := filepath.Join(dir, "AAPL.consumer.wal")
+	store := newFakeStore()
+	now := time.Now().UnixNano()
+
+	var ab [ipc.AppliedRecordSize]byte
+	var tb [ipc.TradeRecordSize]byte
+
+	// First run: a resting sell order for 10 partially filled by a 4-lot trade.
+	w, err := wal.CreateWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipc.EncodeAppliedRecord(ab[:], ipc.Cmd{Op: ipc.OpNew, OrderID: 1, SymbolID: 0, Qty: 10, Price: 100, Side: ipc.SideSell, Typ: ipc.TypeLimit, CreatedAt: now, Seq: 1}, ipc.Outcome{Status: ipc.StatusResting})
+	w.Append(ab[:])
+	ipc.EncodeTradeRecord(tb[:], ipc.Trade{TradeID: 1, BidOrderID: 2, AskOrderID: 1, Buyer: 2, Seller: 1, Price: 100, Quantity: 4, SymbolID: 0, ExecutedAt: now})
+	w.Append(tb[:])
+	w.Close()
+
+	p, err := Open(dir, tbl, store, nil, Options{BatchSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range p.ch {
+		p.drainTail(ch)
+	}
+	p.flushAll()
+	p.Close()
+
+	if o := store.orders[1]; o.Status != "partially_filled" || o.Remq != 6 || o.AvgPrice != 100 {
+		t.Fatalf("after first run order 1 = %+v, want partially_filled/remq 6/avg 100", o)
+	}
+	if cp := store.checkpoints[0]; cp.Seq != 1 || cp.Offset == 0 {
+		t.Fatalf("checkpoint = %+v, want seq 1 and a non-zero offset", cp)
+	}
+
+	// Second run: append a new order and the remaining 6-lot fill, then resume.
+	w, err = wal.OpenWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipc.EncodeAppliedRecord(ab[:], ipc.Cmd{Op: ipc.OpNew, OrderID: 3, SymbolID: 0, Qty: 5, Price: 150, Side: ipc.SideBuy, Typ: ipc.TypeLimit, CreatedAt: now, Seq: 2}, ipc.Outcome{Status: ipc.StatusResting})
+	w.Append(ab[:])
+	ipc.EncodeTradeRecord(tb[:], ipc.Trade{TradeID: 2, BidOrderID: 2, AskOrderID: 1, Buyer: 2, Seller: 1, Price: 200, Quantity: 6, SymbolID: 0, ExecutedAt: now})
+	w.Append(tb[:])
+	w.Close()
+
+	p2, err := Open(dir, tbl, store, nil, Options{BatchSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range p2.ch {
+		p.drainTail(ch)
+	}
+	p2.flushAll()
+	p2.Close()
+
+	// value seeded as 100*4 = 400, plus 200*6 = 1200 -> 1600/10 = 160.
+	if o := store.orders[1]; o.Status != "filled" || o.Remq != 0 || o.AvgPrice != 160 {
+		t.Fatalf("after resume order 1 = %+v, want filled/remq 0/avg 160", o)
+	}
+	if _, ok := store.orders[3]; !ok {
+		t.Fatalf("order 3 not projected after resume")
+	}
+	if store.checkpoints[0].Seq != 2 {
+		t.Fatalf("checkpoint seq = %d, want 2", store.checkpoints[0].Seq)
 	}
 }
 

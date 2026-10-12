@@ -9,22 +9,36 @@ package projection
 import (
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"time"
 
 	"TradeIT/internal/ipc"
+	"TradeIT/internal/metrics"
 	"TradeIT/internal/models"
 	"TradeIT/internal/symbol"
 	"TradeIT/internal/wal"
 )
 
-// Store persists projected entities. Implemented by the Postgres layer.
+// Checkpoint is how far one symbol's event log has been projected. Seq is the applied
+// command sequence; Offset is the byte offset just past the last record it covers.
+type Checkpoint struct {
+	SymbolID uint32
+	Seq      uint64
+	Offset   int64
+}
+
+// Store persists projected entities and their checkpoints. Implemented by the Postgres
+// layer, which commits the checkpoint in the same transaction as the batch so projection
+// is exactly-once: a crash can never leave the checkpoint ahead of the data.
 type Store interface {
-	UpsertOrders(orders []models.Order) error
-	InsertTrades(trades []models.TradeDetails) error
 	// GetOrder returns an order row, used to seed state for orders created before the
 	// projector's current position.
 	GetOrder(id uint64) (models.Order, bool, error)
+	// LoadCheckpoints returns the last committed position per symbol, keyed by symbol id.
+	LoadCheckpoints() (map[uint32]Checkpoint, error)
+	// CommitBatch atomically writes the orders, trades and checkpoint for one symbol.
+	CommitBatch(orders []models.Order, trades []models.TradeDetails, cp Checkpoint) error
 }
 
 // Cache holds order status for broker reads. Implemented by Redis.
@@ -32,11 +46,20 @@ type Cache interface {
 	SetOrderStatus(orderID uint64, status string, remaining int, avgPrice int64) error
 }
 
+// WatermarkSink receives the projector's per-symbol committed sequence so it can be
+// published to shared memory (for lag metrics and a future WAL truncation floor).
+// *control.Region satisfies it. A nil sink disables publishing.
+type WatermarkSink interface {
+	SetWatermark(id uint32, seq uint64)
+}
+
 // Options configures the projector.
 type Options struct {
 	PollInterval  time.Duration
 	BatchSize     int
 	FlushInterval time.Duration
+	// Region, when set, receives the projector's committed sequence per symbol.
+	Region WatermarkSink
 }
 
 func (o Options) withDefaults() Options {
@@ -66,7 +89,8 @@ type tailer struct {
 	name   string
 	path   string
 	reader *wal.Reader
-	offset int64
+	offset int64  // byte offset just past the last record read
+	seq    uint64 // last applied command sequence (checkpoint identity)
 	orders map[uint64]*orderState
 	dirty  []uint64
 	trades []models.TradeDetails
@@ -78,14 +102,38 @@ type orderState struct {
 	value  int64 // sum(price * quantity) over fills
 }
 
-// Open opens the projector over the per-symbol consumer WALs in dir. It reads from the
-// beginning of each log; a crash mid-run simply replays, and the idempotent writes make
-// that safe.
+// Open opens the projector over the per-symbol consumer WALs in dir. When the store holds
+// a checkpoint for a symbol and the log has not been truncated below it, reading resumes
+// at that offset; otherwise the log is replayed from the beginning. Either way the writes
+// are idempotent, so a crash mid-run is safe.
 func Open(dir string, table *symbol.Table, store Store, cache Cache, opts Options) (*Projector, error) {
 	p := &Projector{table: table, store: store, cache: cache, opts: opts.withDefaults()}
+
+	var cps map[uint32]Checkpoint
+	if store != nil {
+		var err error
+		cps, err = store.LoadCheckpoints()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	for id, name := range table.Names() {
 		path := filepath.Join(dir, name+".consumer.wal")
-		r, err := wal.OpenReaderAt(path, 0)
+		cp := cps[uint32(id)]
+		start := cp.Offset
+		if start > 0 {
+			// Trust the offset only while the log still extends to it: a truncated or
+			// rotated log invalidates byte offsets, so fall back to a full replay.
+			if fi, err := os.Stat(path); err != nil || fi.Size() < start {
+				start = 0
+			}
+		}
+		var seq uint64
+		if start > 0 {
+			seq = cp.Seq
+		}
+		r, err := wal.OpenReaderAt(path, start)
 		if err != nil {
 			// A missing log (symbol never traded) is not fatal.
 			continue
@@ -95,6 +143,8 @@ func Open(dir string, table *symbol.Table, store Store, cache Cache, opts Option
 			name:   name,
 			path:   path,
 			reader: r,
+			offset: start,
+			seq:    seq,
 			orders: make(map[uint64]*orderState),
 		})
 	}
@@ -159,6 +209,7 @@ func (p *Projector) drainTail(ch *tailer) int {
 		case ipc.RecordTrade:
 			p.applyTrade(ch, ipc.DecodeTrade(rec[1:]))
 		}
+		metrics.RecordsProjected.WithLabelValues(ch.name).Inc()
 		n++
 		if len(ch.dirty) >= p.opts.BatchSize || len(ch.trades) >= p.opts.BatchSize {
 			p.flush(ch)
@@ -169,6 +220,9 @@ func (p *Projector) drainTail(ch *tailer) int {
 
 func (p *Projector) applyCommand(ch *tailer, rec []byte) {
 	cmd, o := ipc.DecodeApplied(rec)
+	// Advance the checkpoint identity even when the command has no visible effect (e.g.
+	// a cancel for an order this projector never saw), so it is not reprocessed.
+	ch.seq = cmd.Seq
 	name, _ := p.table.Name(cmd.SymbolID)
 	switch cmd.Op {
 	case ipc.OpNew:
@@ -245,6 +299,7 @@ func (p *Projector) applyTrade(ch *tailer, t ipc.Trade) {
 		Price:       t.Price,
 		Executed_at: time.Unix(0, t.ExecutedAt),
 	})
+	metrics.TradesProjected.WithLabelValues(ch.name).Inc()
 }
 
 // stateOf returns the live state for an order, loading it from the store when it was
@@ -260,7 +315,14 @@ func (p *Projector) stateOf(ch *tailer, id uint64) *orderState {
 	if err != nil || !found {
 		return nil
 	}
-	st := &orderState{order: order, filled: order.Quantity - order.Remq}
+	filled := order.Quantity - order.Remq
+	st := &orderState{
+		order:  order,
+		filled: filled,
+		// Seed the running fill value so a later trade computes a correct average: the
+		// database row already reflects every fill up to the checkpoint.
+		value: order.AvgPrice * int64(filled),
+	}
 	ch.orders[id] = st
 	return st
 }
@@ -284,31 +346,39 @@ func (p *Projector) flush(ch *tailer) {
 	if len(ch.dirty) == 0 && len(ch.trades) == 0 {
 		return
 	}
-	if len(ch.dirty) > 0 && p.store != nil {
-		orders := make([]models.Order, 0, len(ch.dirty))
-		for _, id := range ch.dirty {
-			if st, ok := ch.orders[id]; ok {
-				orders = append(orders, st.order)
-			}
+	if p.store == nil {
+		ch.dirty = ch.dirty[:0]
+		ch.trades = ch.trades[:0]
+		return
+	}
+	orders := make([]models.Order, 0, len(ch.dirty))
+	for _, id := range ch.dirty {
+		if st, ok := ch.orders[id]; ok {
+			orders = append(orders, st.order)
 		}
-		if err := p.store.UpsertOrders(orders); err != nil {
-			log.Println("projection: upsert orders failed on", ch.name, ":", err)
-			return // keep dirty; retry next flush
-		}
-		if p.cache != nil {
-			for _, o := range orders {
-				if err := p.cache.SetOrderStatus(o.Id, o.Status, o.Remq, o.AvgPrice); err != nil {
-					log.Println("projection: cache write failed for", o.Id, ":", err)
-				}
+	}
+	cp := Checkpoint{SymbolID: ch.id, Seq: ch.seq, Offset: ch.offset}
+	// The checkpoint is committed in the same transaction as the data, so it can never
+	// run ahead of it: after a crash the projector resumes exactly at this position.
+	start := time.Now()
+	if err := p.store.CommitBatch(orders, ch.trades, cp); err != nil {
+		metrics.ProjectionErrors.Inc()
+		log.Println("projection: commit failed on", ch.name, ":", err)
+		return // keep dirty; retry next flush
+	}
+	metrics.ObserveDuration(metrics.ProjectionFlushSeconds, start)
+	if p.cache != nil {
+		for _, o := range orders {
+			if err := p.cache.SetOrderStatus(o.Id, o.Status, o.Remq, o.AvgPrice); err != nil {
+				metrics.CacheErrors.Inc()
+				log.Println("projection: cache write failed for", o.Id, ":", err)
 			}
 		}
 	}
-	if len(ch.trades) > 0 && p.store != nil {
-		if err := p.store.InsertTrades(ch.trades); err != nil {
-			log.Println("projection: insert trades failed on", ch.name, ":", err)
-			return
-		}
+	if p.opts.Region != nil {
+		p.opts.Region.SetWatermark(ch.id, cp.Seq)
 	}
+	metrics.ProjectionSeq.WithLabelValues(ch.name).Set(float64(cp.Seq))
 	ch.dirty = ch.dirty[:0]
 	ch.trades = ch.trades[:0]
 }

@@ -3,6 +3,9 @@
 *.out
 *.exe
 
+# Local shared-memory ingest files (rings, WALs, snapshots, control regions)
+/ipc/
+
 # Benchmark output
 bench*.txt
 matcher_bench.txt

@@ -1,0 +1,115 @@
+{
+  "title": "TradeIT Pipeline",
+  "uid": "tradeit-pipeline",
+  "schemaVersion": 39,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "2s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Throughput (orders/sec)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(tradeit_orders_submitted_total[5s]))",
+          "legendFormat": "submitted"
+        },
+        {
+          "expr": "sum(rate(tradeit_commands_applied_total[5s]))",
+          "legendFormat": "applied (engine)"
+        },
+        {
+          "expr": "sum(rate(tradeit_records_projected_total[5s]))",
+          "legendFormat": "projected (db)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pipeline lag (records)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "tradeit_consumer_watermark - on(symbol) group_left tradeit_projection_seq",
+          "legendFormat": "projection lag {{symbol}}"
+        },
+        {
+          "expr": "tradeit_ring_pending",
+          "legendFormat": "ring pending {{symbol}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL fsync latency (p99)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(tradeit_wal_sync_seconds_bucket[5s])) by (le, symbol))",
+          "legendFormat": "{{symbol}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP request latency (p99)",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(tradeit_http_request_seconds_bucket[5s])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Projection commit latency (p99)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(tradeit_projection_flush_seconds_bucket[5s])) by (le))",
+          "legendFormat": "flush"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Ring-full rejections",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(tradeit_ring_full_total[5m]))", "legendFormat": "last 5m" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Projection errors",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(tradeit_projection_errors_total[5m]))", "legendFormat": "last 5m" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Cache write errors",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(increase(tradeit_cache_errors_total[5m]))", "legendFormat": "last 5m" }
+      ]
+    }
+  ]
+}

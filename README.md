@@ -97,20 +97,50 @@ cp .env.example .env
 
 ```bash
 # 1. Start PostgreSQL and Redis
-docker compose up -d
+docker compose up -d db redis
 
-# 2. Run the two services (each in its own terminal)
+# 2. Run the three services (each in its own terminal)
 go run ./cmd/user-order-service     # HTTP API on :8000
-go run ./cmd/engine-service         # queue workers (no HTTP)
+go run ./cmd/engine-service         # ring consumer (metrics/health on :8001)
+go run ./cmd/projection-service     # event log -> Postgres + Redis cache (metrics/health on :8002)
 ```
 
-The Compose file currently ships only the `db` and `redis` services; the two application
-services are commented out because they are normally run with `go run` during development.
-Uncomment them to run everything in containers.
+Set `TRADEIT_CONFIG=config/tradeit.toml` (it is in `.env.example`) so all three services
+share the symbol table and the shared-memory ingest directory. With `ingest.enabled = true`
+in that file, orders flow through the shared-memory ring instead of the legacy Redis queue.
+
+## Demo: shared-memory ring pipeline
+
+The whole stack runs in containers, sharing one ingest volume:
+
+```bash
+docker compose up -d --build db redis user-order-service engine-service projection-service
+
+# Place orders and verify they become queryable through the read path.
+go run ./cmd/loadgen -n 20000 -c 64 -verify 200
+
+# End-to-end smoke test (brings the stack up, drives load, checks read-back).
+scripts/smoke.sh 20000 64
+
+# Recovery demo: kill -9 the engine mid-load and show no order is lost.
+scripts/recovery.sh 20000 64
+```
+
+Observability (Prometheus + Grafana with a provisioned dashboard):
+
+```bash
+docker compose --profile observability up -d
+# Grafana:    http://localhost:3000  (anonymous viewer, admin/admin)
+# Prometheus: http://localhost:9090
+```
+
+Every service exposes `/metrics`, `/healthz` and `/readyz`. The key panel is the pipeline
+lag: `tradeit_consumer_watermark - tradeit_projection_seq`.
 
 ## API
 
-All routes except `register`/`login` require a `Authorization: Bearer <jwt>` header.
+All routes except `register`/`login` require the JWT in the `Authorization` header
+(the raw token, not a `Bearer` prefix).
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -121,7 +151,11 @@ All routes except `register`/`login` require a `Authorization: Bearer <jwt>` hea
 | `GET` | `/user/fund` | yes | Get account funds |
 | `GET` | `/order/` | yes | List the user's orders |
 | `POST` | `/order/sort` | yes | Query orders with filters |
-| `POST` | `/order/create` | yes | Place an order |
+| `POST` | `/order/create` | yes | Place an order (202 in ring mode) |
+| `POST` | `/order/cancel` | yes | Cancel a resting order (202) |
+| `POST` | `/order/modify` | yes | Reduce quantity or re-price (202) |
+| `GET` | `/order/:id` | yes | One order's status (cache -> Postgres) |
+| `GET` | `/healthz`, `/readyz`, `/metrics` | no | Ops endpoints |
 
 ## Redis queues
 

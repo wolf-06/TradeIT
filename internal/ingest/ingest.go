@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"TradeIT/internal/ipc"
+	"TradeIT/internal/metrics"
 	"TradeIT/internal/shmring"
 	"TradeIT/internal/snapshot"
 	"TradeIT/internal/symbol"
@@ -171,6 +172,7 @@ func (p *Producer) Publish(c ipc.Cmd) (uint64, error) {
 	}
 	ch := p.ch[c.SymbolID]
 	if ch.ring.Free() == 0 {
+		metrics.RingFull.WithLabelValues(ch.name).Inc()
 		return 0, ErrRingFull
 	}
 	c.Seq = ch.seq
@@ -183,6 +185,7 @@ func (p *Producer) Publish(c ipc.Cmd) (uint64, error) {
 	}
 	ch.ring.Commit(1)
 	ch.seq++
+	metrics.OrdersSubmitted.WithLabelValues(ch.name).Inc()
 	return c.Seq, nil
 }
 
@@ -202,7 +205,10 @@ func (p *Producer) SyncSymbol(id uint32) error {
 	if int(id) >= len(p.ch) {
 		return fmt.Errorf("ingest: unknown symbol id %d", id)
 	}
-	return p.ch[id].pwal.Sync()
+	start := time.Now()
+	err := p.ch[id].pwal.Sync()
+	metrics.WalSyncSeconds.WithLabelValues(p.ch[id].name).Observe(time.Since(start).Seconds())
+	return err
 }
 
 // FreeFor returns the number of free slots in one symbol's ring.
@@ -454,6 +460,11 @@ func (c *Consumer) DrainOnce(max int) (int, error) {
 			}
 			ch.ring.Ack(uint64(n))
 			total += n
+			metrics.CommandsApplied.WithLabelValues(ch.name).Add(float64(n))
+		}
+		metrics.ConsumerWatermark.WithLabelValues(ch.name).Set(float64(ch.wm))
+		if head := ch.ring.Head(); head >= ch.wm {
+			metrics.RingPending.WithLabelValues(ch.name).Set(float64(head - ch.wm))
 		}
 		c.maybeSnapshot(i, ch)
 	}

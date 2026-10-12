@@ -81,6 +81,21 @@ type TradeDetails struct {
 	Executed_at time.Time `json:"execution_time"`
 }
 
+// ProjectionCheckpoint records how far the projection service has consumed a symbol's
+// consumer event log. It is written in the same transaction as the orders and trades it
+// covers, so on restart the projector resumes exactly where it left off. Seq is the
+// stable identity (the applied command's sequence); Offset is a seek optimisation that is
+// only trusted while the log has not been truncated.
+type ProjectionCheckpoint struct {
+	// autoIncrement:false is essential: symbol id 0 is a valid key, but GORM would treat
+	// the zero value as "unset" and let the sequence assign it, silently inserting a new
+	// row on every flush instead of updating symbol 0's checkpoint.
+	SymbolID  uint32    `json:"symbol_id" gorm:"PrimaryKey;autoIncrement:false"`
+	Seq       uint64    `json:"seq"`
+	Offset    int64     `json:"offset" gorm:"column:log_offset"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 func InitTables() {
 	// AutoMigrate errors used to be discarded, so a change that could not be applied
 	// (for example the unique index on credentials.email while duplicate rows still
@@ -94,4 +109,5 @@ func InitTables() {
 	migrate(Credential{})
 	migrate(Order{})
 	migrate(TradeDetails{})
+	migrate(ProjectionCheckpoint{})
 }

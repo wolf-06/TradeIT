@@ -4,6 +4,7 @@ import (
 	"TradeIT/internal/config"
 	"TradeIT/internal/control"
 	"TradeIT/internal/database"
+	"TradeIT/internal/metrics"
 	"TradeIT/internal/models"
 	"TradeIT/services/engine-service/engine"
 	"fmt"
@@ -16,7 +17,8 @@ func main() {
 	fmt.Println("starting Engine Service on :8001")
 
 	if err := godotenv.Load(); err != nil {
-		log.Fatalln("Error in loading the env file: ", err)
+		// Not fatal: in a container the environment is injected by the orchestrator.
+		log.Println("engine: no .env file loaded; using the process environment")
 	}
 
 	database.InitDb()
@@ -44,6 +46,19 @@ func main() {
 	}
 	go rc.Run()
 	fmt.Printf("engine: shared-memory ingest enabled (dir %s)\n", cfg.Ingest.Dir)
+
+	// Expose metrics and health on the engine port for the observability stack.
+	metrics.Serve(":8001", func() error {
+		db := database.SetDB()
+		if db == nil {
+			return fmt.Errorf("database not initialised")
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.Ping()
+	})
 
 	// Keep the service running
 	select {}

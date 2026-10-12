@@ -8,8 +8,6 @@ services:
     image: postgres:18-alpine
     # No "user:" override on purpose: the entrypoint must start as root so it can
     # chown/chmod PGDATA and /var/run/postgresql, then it drops to the postgres user.
-    # Forcing `user: 1000:1000` caused:
-    #   chmod: changing permissions of '/var/run/postgresql': Operation not permitted
     ports:
       - "5432:5432"
     environment:
@@ -18,10 +16,13 @@ services:
       - POSTGRES_DB=tradeit
     volumes:
       # Postgres 18+ requires the mount at /var/lib/postgresql (the parent), NOT
-      # /var/lib/postgresql/data. Mounting at .../data makes the entrypoint abort with
-      #   "there appears to be PostgreSQL data in: /var/lib/postgresql/data (unused mount/volume)"
-      # even when the volume is completely empty.
+      # /var/lib/postgresql/data.
       - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tradeit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   redis:
     container_name: tradeit_redis
@@ -30,42 +31,151 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    # Order-status cache entries are short-lived; evict them under memory pressure.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
-  # user-order-service:
-  #   build:
-  #     context: .
-  #     dockerfile: services/user-order-service/Dockerfile
-  #   container_name: tradeit_user_order_service
-  #   ports:
-  #     - "8000:8000"
-  #   environment:
-  #     - redis_addr=redis:6379
-  #     - redis_password=
-  #   depends_on:
-  #     - db
-  #     - redis
-  #   networks:
-  #     - tradeit_network
-  #
-  # engine-service:
-  #   build:
-  #     context: .
-  #     dockerfile: services/engine-service/Dockerfile
-  #   container_name: tradeit_engine_service
-  #   ports:
-  #     - "8001:8001"
-  #   environment:
-  #     - redis_addr=redis:6379
-  #     - redis_password=
-  #   depends_on:
-  #     - db
-  #     - redis
-  #   networks:
-  #     - tradeit_network
-  #
+  user-order-service:
+    build:
+      context: .
+      dockerfile: services/user-order-service/Dockerfile
+    container_name: tradeit_user_order_service
+    ports:
+      - "8000:8000"
+    environment:
+      - jwtkey=${JWTKEY:-dev-secret-change-me}
+      - redis_addr=redis:6379
+      - redis_password=
+      - db_host=db
+      - db_port=5432
+      - db_user=postgres
+      - db_passwd=dev123
+      - db_name=tradeit
+      - TRADEIT_CONFIG=/app/config/tradeit.toml
+    volumes:
+      # Shared ingest directory: the per-symbol ring and WAL files live here.
+      - ipc_data:/app/ipc
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  engine-service:
+    build:
+      context: .
+      dockerfile: services/engine-service/Dockerfile
+    container_name: tradeit_engine_service
+    ports:
+      - "8001:8001"
+    environment:
+      - redis_addr=redis:6379
+      - redis_password=
+      - db_host=db
+      - db_port=5432
+      - db_user=postgres
+      - db_passwd=dev123
+      - db_name=tradeit
+      - TRADEIT_CONFIG=/app/config/tradeit.toml
+    volumes:
+      - ipc_data:/app/ipc
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      # The engine opens the rings the producer creates, so it starts after it.
+      user-order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8001/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  projection-service:
+    build:
+      context: .
+      dockerfile: services/projection-service/Dockerfile
+    container_name: tradeit_projection_service
+    ports:
+      - "8002:8002"
+    environment:
+      - redis_addr=redis:6379
+      - redis_password=
+      - db_host=db
+      - db_port=5432
+      - db_user=postgres
+      - db_passwd=dev123
+      - db_name=tradeit
+      - TRADEIT_CONFIG=/app/config/tradeit.toml
+    volumes:
+      - ipc_data:/app/ipc
+      - ./config:/app/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # The projector tails the consumer WAL the engine creates.
+      engine-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8002/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Observability stack. Start with:  docker compose --profile observability up -d
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.54.1
+    container_name: tradeit_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - user-order-service
+      - engine-service
+      - projection-service
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.2.0
+    container_name: tradeit_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   postgres_data:
   redis_data:
+  # The shared-memory ingest files. For maximum throughput on the demo host, replace this
+  # named volume with a tmpfs bind mount, e.g. `- /dev/shm/tradeit:/app/ipc` on all three
+  # services (the ring is mmap'd, so a RAM-backed directory keeps it at memory speed).
+  ipc_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   tradeit_network:

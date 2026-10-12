@@ -172,3 +172,9 @@ func (c *Config) SymbolTable() (*symbol.Table, error) { return symbol.New(c.Symb
 
 // ControlPath returns the shared watermark region path (inside the ingest directory).
 func (c *Config) ControlPath() string { return filepath.Join(c.Ingest.Dir, "control") }
+
+// ProjectionControlPath returns the region the projection service publishes its committed
+// watermark to. It is separate from the consumer's region so neither clobbers the other.
+func (c *Config) ProjectionControlPath() string {
+	return filepath.Join(c.Ingest.Dir, "projection.control")
+}

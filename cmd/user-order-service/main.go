@@ -4,12 +4,15 @@ import (
 	"TradeIT/internal/config"
 	"TradeIT/internal/control"
 	"TradeIT/internal/database"
+	"TradeIT/internal/metrics"
+	"TradeIT/internal/middleware"
 	"TradeIT/internal/models"
 	"TradeIT/services/user-order-service/controller"
 	"TradeIT/services/user-order-service/producer"
 	"TradeIT/services/user-order-service/repo"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -21,7 +24,8 @@ func main() {
 	fmt.Println("starting User-Order Service on :8000")
 
 	if err := godotenv.Load(); err != nil {
-		log.Fatalln("Error in loading the env file: ", err)
+		// Not fatal: in a container the environment is injected by the orchestrator.
+		log.Println("user-order-service: no .env file loaded; using the process environment")
 	}
 
 	// Fail fast instead of signing/verifying JWTs with an empty key (anyone could
@@ -31,6 +35,8 @@ func main() {
 	}
 
 	router := gin.Default()
+	router.Use(middleware.Metrics())
+	registerOpsRoutes(router)
 	database.InitDb()
 	if database.SetDB() == nil {
 		// Without this the service starts happily and every request then panics on a
@@ -106,4 +112,24 @@ func snapshotWatermarks(region *control.Region, symbols int) ([]uint64, bool) {
 		}
 	}
 	return wm, ready
+}
+
+// registerOpsRoutes exposes liveness, readiness and Prometheus metrics. They sit outside
+// the JWT-protected groups so an orchestrator or scraper needs no token.
+func registerOpsRoutes(router *gin.Engine) {
+	router.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	router.GET("/readyz", func(c *gin.Context) {
+		db := database.SetDB()
+		if db == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database not initialised"})
+			return
+		}
+		sqlDB, err := db.DB()
+		if err != nil || sqlDB.Ping() != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database unreachable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
+	router.GET("/metrics", gin.WrapH(metrics.Handler()))
 }
