@@ -117,8 +117,9 @@ func (h *RingHandler) apply(c ipc.Cmd) ipc.Outcome {
 		if err := h.ledger.ProcessOrder(h.toOrder(c, name)); err != nil {
 			return outcomeFromError(err)
 		}
-		filled := h.ledger.FilledQty(name, c.OrderID, int(c.Qty))
-		return ipc.Outcome{Status: statusFromFill(filled, int(c.Qty)), FilledQty: int32(filled)}
+		// Fills are carried by the trade records the projector reads, not by this
+		// outcome, so the arriving order is not double-counted.
+		return ipc.Outcome{Status: ipc.StatusResting}
 	case ipc.OpCancel:
 		return outcomeFromError(h.ledger.CancelOrder(name, c.OrderID))
 	case ipc.OpReduceQty:
@@ -127,17 +128,6 @@ func (h *RingHandler) apply(c ipc.Cmd) ipc.Outcome {
 		return outcomeFromError(h.ledger.Modify(name, c.OrderID, c.Price, int(c.Qty)))
 	default:
 		return ipc.Outcome{Status: ipc.StatusRejected, Err: ErrUnknownOp}
-	}
-}
-
-func statusFromFill(filled, quantity int) ipc.Status {
-	switch {
-	case filled <= 0:
-		return ipc.StatusResting
-	case filled >= quantity:
-		return ipc.StatusFilled
-	default:
-		return ipc.StatusPartiallyFilled
 	}
 }
 

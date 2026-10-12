@@ -435,18 +435,6 @@ func (ob *Orderbook) Modify(orderId uint64, newPrice int64, newQuantity int) err
 	return ob.matchLocked(order)
 }
 
-// FilledQty returns how much of an order has been filled given its original quantity. A
-// fully filled order is no longer in the book, so its filled quantity is the whole
-// quantity; a resting order's filled quantity is quantity minus its remaining quantity.
-func (ob *Orderbook) FilledQty(orderID uint64, quantity int) int {
-	ob.mu.RLock()
-	defer ob.mu.RUnlock()
-	if node, ok := ob.orderTable[orderID]; ok {
-		return quantity - node.Order_.Remq
-	}
-	return quantity
-}
-
 func (ob *Orderbook) DisplayResult() {
 	fmt.Printf("Trades: %d |\nBuyOrders: %d|\nSellOrders: %d|\nTotal: %d", ob.tradeCount, ob.buyCount, ob.sellCount, (ob.tradeCount + ob.sellCount + ob.buyCount))
 	fmt.Printf("\nPrice levels: \n bids: %d\nasks: %d", ob.bids.levelCount(), ob.asks.levelCount())
