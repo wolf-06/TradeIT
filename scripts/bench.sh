@@ -17,6 +17,8 @@
 #   BENCHTIME=3x        go test -benchtime for the hot-path benchmarks
 #   COUNT=3             go test -count (repetitions) for the hot-path benchmarks
 #   MICRO_BENCHTIME=200ms   go test -benchtime for the component micro-benchmarks
+#   BENCH_LATENCY_STRIDE=16 latency sampling stride for the hot-path benchmarks
+#                           (1 = time every order, best tail resolution)
 #   LOAD_N=100000 LOAD_C=128 LOAD_VERIFY=500   cmd/loadgen parameters for the E2E test
 #   BASE=http://localhost:8000                user-order-service base URL
 #   PROFILE=yes         also write a CPU + memory profile of the consumer benchmark
@@ -206,32 +208,62 @@ h "Medians (per benchmark, across the -count runs)"
 note "Median ns/op for every benchmark, and median orders/sec where the benchmark reports it."
 fence
 {
-awk '/^Benchmark/ { name=$1; sub(/-[0-9]+$/, "", name); print name, $3 }' "$RAW" \
-  | sort -k1,1 -k2,2n \
-  | awk '
-    function flush() {
-      if (n == 0) return
-      med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
-      printf "%-38s %12.2f ns/op   (n=%d)\n", cur, med, n
-    }
-    $1 != cur { flush(); cur = $1; n = 0 }
-    { v[++n] = $2 }
-    END { flush() }
-  '
-awk '/orders\/sec/ { name=$1; sub(/-[0-9]+$/, "", name); for (i=1;i<=NF;i++) if ($i=="orders/sec") print name, $(i-1) }' "$RAW" \
-  | sort -k1,1 -k2,2n \
-  | awk '
-    function flush() {
-      if (n == 0) return
-      med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
-      printf "%-38s %12.0f orders/sec   (n=%d)\n", cur, med, n
-    }
-    $1 != cur { flush(); cur = $1; n = 0 }
-    { v[++n] = $2 }
-    END { flush() }
-  '
+  awk '/^Benchmark/ { name=$1; sub(/-[0-9]+$/, "", name); print name, $3 }' "$RAW" \
+    | sort -k1,1 -k2,2n \
+    | awk '
+      function flush() {
+        if (n == 0) return
+        med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+        printf "%-38s %12.2f ns/op   (n=%d)\n", cur, med, n
+      }
+      $1 != cur { flush(); cur = $1; n = 0 }
+      { v[++n] = $2 }
+      END { flush() }
+    '
+  awk '/orders\/sec/ { name=$1; sub(/-[0-9]+$/, "", name); for (i=1;i<=NF;i++) if ($i=="orders/sec") print name, $(i-1) }' "$RAW" \
+    | sort -k1,1 -k2,2n \
+    | awk '
+      function flush() {
+        if (n == 0) return
+        med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+        printf "%-38s %12.0f orders/sec   (n=%d)\n", cur, med, n
+      }
+      $1 != cur { flush(); cur = $1; n = 0 }
+      { v[++n] = $2 }
+      END { flush() }
+    '
 } >>"$OUT"
 fence
+
+h "Latency (sampled, median across the -count runs)"
+note "Per-operation latency percentiles reported by the in-process benchmarks. \`/order\` is"
+note "per matching command; \`/batch\` is per producer submission batch (512 orders)."
+note "Sampling stride is ${BENCH_LATENCY_STRIDE:-16} (set BENCH_LATENCY_STRIDE=1 to time every operation)."
+fence
+awk '
+  /^Benchmark/ {
+    name=$1; sub(/-[0-9]+$/, "", name)
+    for (i=2;i<=NF;i++) {
+      if ($i ~ /^(mean|p50|p90|p99|p999|max)-ns\/(order|batch)$/) print name, $i, $(i-1)
+    }
+  }
+' "$RAW" \
+  | sort -k1,1 -k2,2 -k3,3n \
+  | awk '
+    function flush() {
+      if (n == 0) return
+      med = (n % 2 == 1) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+      printf "%-38s %-16s %12.1f ns   (n=%d)\n", curName, curMetric, med, n
+    }
+    {
+      name=$1; metric=$2; val=$3+0
+      if (name != curName || metric != curMetric) { flush(); curName=name; curMetric=metric; n=0 }
+      v[++n]=val
+    }
+    END { flush() }
+  ' >>"$OUT"
+fence
+
 
 h "Combined benchmark result lines"
 fence
@@ -242,11 +274,16 @@ h "How to read this"
 cat >>"$OUT" <<'EOF'
 - `orders/sec` comes from the benchmark's reported metric; `ns/op` and `allocs/op` are the
   standard Go values. Take the median of the `-count` repetitions.
+- `p50-ns/order` etc. are per-operation latencies sampled by the in-process benchmarks
+  (default: one in 16 operations, `BENCH_LATENCY_STRIDE`). `/batch` is per producer
+  submission batch (512 orders). Sampling keeps the clock reads off the throughput path;
+  set `BENCH_LATENCY_STRIDE=1` for a latency-focused run.
 - The hot-path benchmarks run on tmpfs (`/dev/shm`), so the WAL fsync is not a confound;
   the producer/consumer numbers are the ring + group-commit path.
 - The end-to-end numbers include the HTTP client (same host by default), so they measure
   the front door, not the engine. For the engine, read the hot-path section.
-- Compare runs only on the same SKU/region and with the same `GOMAXPROCS` (reported above).
+- Compare runs only on the same SKU/region and with the same `GOMAXPROCS` (reported above),
+  and check `current_clocksource = tsc` before trusting any ns figure.
 EOF
 
 say "report written to $OUT"

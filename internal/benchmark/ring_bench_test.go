@@ -7,11 +7,56 @@ import (
 	"testing"
 
 	"TradeIT/internal/ingest"
+	"TradeIT/internal/ipc"
 	"TradeIT/internal/models"
 	"TradeIT/internal/symbol"
 	"TradeIT/services/engine-service/engine"
 	"TradeIT/services/user-order-service/producer"
 )
+
+// timedHandler wraps an ingest.Handler to record the per-order apply latency. The consumer
+// calls Apply exactly once per command, so bracketing it measures the match path as the
+// engine sees it (decode and the applied-WAL append happen outside Apply, in the consumer).
+// It forwards the optional TradeSource/Restorer/Snapshotter capabilities so it is a drop-in
+// replacement for engine.RingHandler, including trade logging.
+type timedHandler struct {
+	inner   ingest.Handler
+	sampler *latencySampler
+}
+
+func (h *timedHandler) Apply(c ipc.Cmd) ipc.Outcome {
+	h.sampler.begin()
+	o := h.inner.Apply(c)
+	h.sampler.end()
+	return o
+}
+
+func (h *timedHandler) Trades() []ipc.Trade {
+	if ts, ok := h.inner.(ingest.TradeSource); ok {
+		return ts.Trades()
+	}
+	return nil
+}
+
+func (h *timedHandler) Restore(c ipc.Cmd, o ipc.Outcome) {
+	if r, ok := h.inner.(ingest.Restorer); ok {
+		r.Restore(c, o)
+	}
+}
+
+func (h *timedHandler) Snapshot(symbolID uint32, seq uint64) ([]byte, error) {
+	if s, ok := h.inner.(ingest.Snapshotter); ok {
+		return s.Snapshot(symbolID, seq)
+	}
+	return nil, nil
+}
+
+func (h *timedHandler) RestoreSnapshot(symbolID uint32, seq uint64, data []byte) error {
+	if s, ok := h.inner.(ingest.Snapshotter); ok {
+		return s.RestoreSnapshot(symbolID, seq, data)
+	}
+	return nil
+}
 
 // fastDir returns a directory for the ring/WAL files. It prefers /dev/shm (tmpfs) so the
 // group-commit fsync is not the measurement confound; this isolates the ring hot path.
@@ -44,13 +89,23 @@ func itemsFor(orders []models.Order, tbl *symbol.Table, from, to int) []producer
 	return items
 }
 
-func submitAllBatched(p *producer.Producer, tbl *symbol.Table, orders []models.Order, batch int) error {
+// submitAllBatched publishes orders in fixed-size batches. When lat is non-nil it times
+// each SubmitOrders call, so the producer benchmark can report per-batch latency; the
+// consumer benchmarks pass nil because their submission runs outside the measured region.
+func submitAllBatched(p *producer.Producer, tbl *symbol.Table, orders []models.Order, batch int, lat *latencySampler) error {
 	for start := 0; start < len(orders); start += batch {
 		end := start + batch
 		if end > len(orders) {
 			end = len(orders)
 		}
-		if _, err := p.SubmitOrders(itemsFor(orders, tbl, start, end)); err != nil {
+		if lat != nil {
+			lat.begin()
+		}
+		_, err := p.SubmitOrders(itemsFor(orders, tbl, start, end))
+		if lat != nil {
+			lat.end()
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -75,6 +130,7 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 	tbl := benchTable(b, cfg.Symbols)
 
 	restore := Silence()
+	lat := newLatencySampler(latencyStride())
 	var total int
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -86,7 +142,8 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 			b.Fatal(err)
 		}
 		ld := engine.InitLedger()
-		c, err := ingest.OpenConsumer(dir, tbl, engine.NewRingHandler(ld, tbl))
+		th := &timedHandler{inner: engine.NewRingHandler(ld, tbl), sampler: lat}
+		c, err := ingest.OpenConsumer(dir, tbl, th)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -100,7 +157,7 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := submitAllBatched(p, tbl, work.Orders, batch); err != nil {
+			if err := submitAllBatched(p, tbl, work.Orders, batch, nil); err != nil {
 				prodErrMu.Lock()
 				prodErr = err
 				prodErrMu.Unlock()
@@ -135,6 +192,7 @@ func BenchmarkRingEndToEnd(b *testing.B) {
 	b.StopTimer()
 	restore()
 
+	lat.report(b, "order")
 	if secs := b.Elapsed().Seconds(); secs > 0 {
 		b.ReportMetric(float64(total)/secs, "orders/sec")
 	}
@@ -152,6 +210,7 @@ func BenchmarkRingConsumerOnly(b *testing.B) {
 	tbl := benchTable(b, cfg.Symbols)
 
 	restore := Silence()
+	lat := newLatencySampler(latencyStride())
 	var total int
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -162,11 +221,12 @@ func BenchmarkRingConsumerOnly(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := submitAllBatched(p, tbl, work.Orders, 512); err != nil {
+		if err := submitAllBatched(p, tbl, work.Orders, 512, nil); err != nil {
 			b.Fatal(err)
 		}
 		ld := engine.InitLedger()
-		c, err := ingest.OpenConsumer(dir, tbl, engine.NewRingHandler(ld, tbl))
+		th := &timedHandler{inner: engine.NewRingHandler(ld, tbl), sampler: lat}
+		c, err := ingest.OpenConsumer(dir, tbl, th)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -189,13 +249,15 @@ func BenchmarkRingConsumerOnly(b *testing.B) {
 	b.StopTimer()
 	restore()
 
+	lat.report(b, "order")
 	if secs := b.Elapsed().Seconds(); secs > 0 {
 		b.ReportMetric(float64(total)/secs, "orders/sec")
 	}
 }
 
 // BenchmarkRingProducerOnly isolates the producer hot path with batched submission
-// (encode + WAL append + ring publish + group-commit fsync).
+// (encode + WAL append + ring publish + group-commit fsync). Latency is reported per
+// batch; each batch is 512 orders.
 func BenchmarkRingProducerOnly(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Seed = 42
@@ -205,6 +267,8 @@ func BenchmarkRingProducerOnly(b *testing.B) {
 	tbl := benchTable(b, cfg.Symbols)
 
 	restore := Silence()
+	// Only ~196 batches per iteration, so sample every one rather than striding.
+	lat := newLatencySampler(1)
 	var total int
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -216,7 +280,7 @@ func BenchmarkRingProducerOnly(b *testing.B) {
 			b.Fatal(err)
 		}
 		b.StartTimer()
-		if err := submitAllBatched(p, tbl, work.Orders, 512); err != nil {
+		if err := submitAllBatched(p, tbl, work.Orders, 512, lat); err != nil {
 			b.Fatal(err)
 		}
 		b.StopTimer()
@@ -227,6 +291,7 @@ func BenchmarkRingProducerOnly(b *testing.B) {
 	b.StopTimer()
 	restore()
 
+	lat.report(b, "batch")
 	if secs := b.Elapsed().Seconds(); secs > 0 {
 		b.ReportMetric(float64(total)/secs, "orders/sec")
 	}

@@ -37,6 +37,7 @@ func BenchmarkMatcherProductionLike(b *testing.B) {
 	work := gen.Generate(workloadSize)
 
 	restore := Silence()
+	lat := newLatencySampler(latencyStride())
 	var total int
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -51,13 +52,16 @@ func BenchmarkMatcherProductionLike(b *testing.B) {
 				ob = engine.InitOrderBook()
 				books[o.Stock] = ob
 			}
+			lat.begin()
 			_ = ob.Matcher(o)
+			lat.end()
 		}
 		total += len(work.Orders)
 	}
 	b.StopTimer()
 	restore()
 
+	lat.report(b, "order")
 	if secs := b.Elapsed().Seconds(); secs > 0 {
 		b.ReportMetric(float64(total)/secs, "orders/sec")
 	}

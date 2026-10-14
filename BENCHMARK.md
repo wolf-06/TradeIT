@@ -160,10 +160,30 @@ Allocations per 100,000-order iteration:
 
 The consumer is now within about 2 percent of the raw matcher.
 
+## Hot path latency
+
+Throughput alone hides the tail, and the tail is what a matching engine lives or dies by.
+The in-process benchmarks now report a per-operation latency distribution (mean, p50, p90,
+p99, p99.9, max) next to `orders/sec`:
+
+- `p*-ns/order` for the matcher and the ring consumer: the latency of one matching command.
+  The consumer times `Handler.Apply`, so it covers decode, match, and trade collection but
+  not the applied-WAL append that follows it.
+- `p*-ns/batch` for the ring producer: one `SubmitOrders` call, which is 512 orders.
+
+Latency is sampled — one order in 16 by default — because a clock read costs roughly 20-30
+ns and timing every order would inflate a ~230 ns/order match and depress the throughput
+number it is reported beside. Set `BENCH_LATENCY_STRIDE=1` for a latency-focused run with
+full tail resolution, or a larger stride to spend even less on the clock. The figures land
+in the raw report's "Latency (sampled)" section, which takes the median across the `-count`
+repetitions.
+
 ## How the numbers were measured
 
 - The hot path benchmarks run in process on tmpfs, so the write-ahead log fsync is not a
   confound. They isolate the ring, the durable log, and the matcher.
+- The hot-path benchmarks also report a sampled per-operation latency distribution; see
+  [Hot path latency](#hot-path-latency) for what each unit covers.
 - Each benchmark runs three times and the median is reported.
 - The HTTP numbers come from the bundled load generator, which registers a user, sends
   orders, and verifies read back through the API.
